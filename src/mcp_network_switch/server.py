@@ -798,6 +798,16 @@ async def handle_upload_config(
     device = inv.get_device(device_id)
     config = inv.get_device_config(device_id)
 
+    # BUG-001 FIX: Validate content is not empty (can brick device!)
+    if not content or not content.strip():
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "error": "Content cannot be empty - this would wipe the device config!",
+                "hint": "Provide valid UCI configuration content",
+            }, indent=2)
+        )]
+
     if config.get("type") != "onti":
         return [TextContent(
             type="text",

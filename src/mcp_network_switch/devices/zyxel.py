@@ -52,6 +52,7 @@ class ZyxelDevice(NetworkDevice):
 
     # Web page cmd values
     CMD_VLAN_LIST = 1282
+    CMD_VLAN_DELETE = 1283
     CMD_VLAN_ADD = 1284
     CMD_VLAN_ADD_SUBMIT = 1285
     CMD_VLAN_EDIT = 1286
@@ -375,10 +376,44 @@ class ZyxelDevice(NetworkDevice):
             return False, str(e)
 
     async def delete_vlan(self, vlan_id: int) -> tuple[bool, str]:
-        """Delete a VLAN via web interface."""
-        # Zyxel uses a different flow for deletion - typically via checkbox + delete button
-        # This would need to be implemented based on the specific page structure
-        return False, "VLAN deletion not yet implemented for Zyxel"
+        """Delete a VLAN via web interface.
+
+        Zyxel GS1900 VLAN deletion flow:
+        1. Get XSSID token from VLAN list page
+        2. POST delete command with VLAN ID
+        """
+        if vlan_id == 1:
+            return False, "Cannot delete default VLAN 1"
+
+        try:
+            xssid = await self._get_xssid(self.CMD_VLAN_LIST)
+            if not self._http:
+                raise ConnectionError("HTTP session not established")
+
+            # Zyxel expects vlanlist as comma-separated VIDs to delete
+            form_data = {
+                "XSSID": xssid,
+                "vlanlist": str(vlan_id),
+                "cmd": str(self.CMD_VLAN_DELETE),
+            }
+
+            resp = await self._http.post(
+                f"{self._base_url}/cgi-bin/dispatcher.cgi",
+                data=form_data,
+            )
+
+            if resp.status_code == 200:
+                # Verify deletion by checking if VLAN still exists
+                vlans = await self.get_vlans()
+                if any(v.id == vlan_id for v in vlans):
+                    return False, f"VLAN {vlan_id} still exists after delete attempt"
+                return True, f"Deleted VLAN {vlan_id}"
+
+            return False, f"Failed: HTTP {resp.status_code}"
+
+        except Exception as e:
+            logger.error(f"Failed to delete VLAN {vlan_id}: {e}")
+            return False, str(e)
 
     async def configure_port(self, port: PortConfig) -> tuple[bool, str]:
         """Configure a port via web interface.

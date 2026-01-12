@@ -23,10 +23,12 @@ import asyncio
 import logging
 import re
 import socket
+import time
 from typing import Optional
 
 from .base import NetworkDevice, DeviceConfig, DeviceStatus, VLANConfig, PortConfig
 from ..utils.connection import with_retry
+from ..utils.logging_config import timed, perf_logger
 
 logger = logging.getLogger(__name__)
 
@@ -132,20 +134,64 @@ class BrocadeTelnet:
         return "\n".join(lines).strip()
 
     async def enable(self, password: str) -> bool:
-        """Enter enable mode."""
+        """Enter enable mode.
+
+        Handles both password-protected and password-less enable modes.
+        Uses a read loop to ensure we capture the Password: prompt reliably.
+        """
         await self._send_raw(b"enable\r\n")
-        await asyncio.sleep(1)
-        initial_output = await self._read_available(timeout=3)
 
-        if b"Password:" in initial_output or b"password:" in initial_output:
-            await self._send_raw(f"{password}\r\n".encode())
-            await asyncio.sleep(1)
-            prompt_output = await self._read_until_prompt(timeout=5)
-            # Check if we got # prompt (enable mode)
-            return "#" in prompt_output
+        # Read until we see Password: prompt or # (already in enable) or timeout
+        output = b""
+        start_time = asyncio.get_event_loop().time()
+        timeout = 5.0
 
-        # Check if we got # prompt (enable mode) without password
-        return "#" in initial_output.decode("ascii", errors="ignore")
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
+                logger.warning(f"Enable mode timeout after {elapsed:.1f}s, output: {output!r}")
+                break
+
+            chunk = await self._read_available(timeout=min(1, timeout - elapsed))
+            if chunk:
+                output += chunk
+                decoded = output.decode("ascii", errors="ignore")
+
+                # Check if password is requested
+                if "Password:" in decoded or "password:" in decoded:
+                    logger.debug("Password prompt detected, sending password")
+                    await self._send_raw(f"{password}\r\n".encode())
+                    await asyncio.sleep(0.5)
+                    # Read the response after password
+                    prompt_output = await self._read_until_prompt(timeout=5)
+                    # Check if we got # prompt (enable mode)
+                    if "#" in prompt_output:
+                        logger.info("Enable mode successful (with password)")
+                        return True
+                    else:
+                        logger.warning(f"Enable mode failed, prompt was: {prompt_output!r}")
+                        return False
+
+                # Check if we're already in enable mode (no password required)
+                if "#" in decoded:
+                    logger.info("Enable mode successful (no password required)")
+                    return True
+
+                # Check for error messages
+                if "Error" in decoded or "incorrect" in decoded.lower():
+                    logger.warning(f"Enable mode error: {decoded}")
+                    return False
+
+            await asyncio.sleep(0.1)  # Small delay between reads
+
+        # Final check - did we end up with # prompt?
+        decoded = output.decode("ascii", errors="ignore")
+        if "#" in decoded:
+            logger.info("Enable mode successful (detected in final output)")
+            return True
+
+        logger.warning(f"Enable mode failed, final output: {decoded!r}")
+        return False
 
 
 class BrocadeDevice(NetworkDevice):
@@ -156,6 +202,7 @@ class BrocadeDevice(NetworkDevice):
         self._telnet: Optional[BrocadeTelnet] = None
 
     @with_retry(max_attempts=5, min_wait=2, max_wait=15)
+    @timed("connect")
     async def connect(self) -> bool:
         """Connect to Brocade switch via telnet."""
         logger.info(f"Connecting to Brocade {self.device_id} at {self.host}")
@@ -218,13 +265,16 @@ class BrocadeDevice(NetworkDevice):
     ERROR_PATTERNS = [
         "Invalid input",
         "Error:",
+        "Error -",        # BUG-002 FIX: Brocade uses "Error -" format too
         "error:",
         "not found",
         "Please disable",  # e.g., "Please disable dual mode..."
+        "Please use a different",  # BUG-002 FIX: e.g., "Please use a different VLAN ID"
         "cannot ",
         "denied",
         "failed",
         "Incomplete command",
+        "is currently reserved",  # BUG-002 FIX: e.g., "VLAN 0 is currently reserved"
     ]
 
     def _has_error(self, output: str) -> Optional[str]:
@@ -247,14 +297,29 @@ class BrocadeDevice(NetworkDevice):
         if not self._telnet:
             raise ConnectionError("Not connected")
 
+        start = time.perf_counter()
         try:
             output = await self._telnet.send_command(command, timeout=self.config.timeout)
+            elapsed = (time.perf_counter() - start) * 1000
             # Check for error messages
             error = self._has_error(output)
             if error:
+                perf_logger.debug(
+                    f"{'execute':20s} | {self.device_id:15s} | {elapsed:8.2f}ms | "
+                    f"FAIL | cmd={command[:50]}"
+                )
                 return False, output
+            perf_logger.debug(
+                f"{'execute':20s} | {self.device_id:15s} | {elapsed:8.2f}ms | "
+                f"OK | cmd={command[:50]}"
+            )
             return True, output
         except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            perf_logger.warning(
+                f"{'execute':20s} | {self.device_id:15s} | {elapsed:8.2f}ms | "
+                f"ERROR | cmd={command[:50]} | {e}"
+            )
             logger.error(f"Command failed on {self.device_id}: {e}")
             self._connected = False
             raise
@@ -283,10 +348,18 @@ class BrocadeDevice(NetworkDevice):
 
         # Join all commands with newlines - Brocade processes them sequentially
         batch = "\n".join(commands)
+        cmd_count = len(commands)
 
+        start = time.perf_counter()
         try:
             output = await self._telnet.send_command(batch, timeout=self.config.timeout)
+            elapsed = (time.perf_counter() - start) * 1000
         except Exception as e:
+            elapsed = (time.perf_counter() - start) * 1000
+            perf_logger.warning(
+                f"{'execute_batch':20s} | {self.device_id:15s} | {elapsed:8.2f}ms | "
+                f"ERROR | cmds={cmd_count} | {e}"
+            )
             logger.error(f"Batch execution failed on {self.device_id}: {e}")
             self._connected = False
             raise
@@ -296,6 +369,15 @@ class BrocadeDevice(NetworkDevice):
 
         # Overall success = no command failed
         overall_success = all(r["success"] for r in results)
+        failed_count = sum(1 for r in results if not r["success"])
+
+        # Log performance - this is the key metric for batch vs single comparison
+        perf_logger.info(
+            f"{'execute_batch':20s} | {self.device_id:15s} | {elapsed:8.2f}ms | "
+            f"{'OK' if overall_success else 'FAIL'} | "
+            f"cmds={cmd_count} | failed={failed_count} | "
+            f"avg={elapsed/cmd_count:.2f}ms/cmd"
+        )
 
         return overall_success, output, results
 
@@ -538,7 +620,13 @@ class BrocadeDevice(NetworkDevice):
             untagged ethe <port-range>
             router-interface ve <vlan-id>
           exit
+
+        BUG-002 FIX: Validates VLAN ID range before sending to device.
         """
+        # BUG-002 FIX: Validate VLAN ID range (1-4094 per IEEE 802.1Q)
+        if vlan.id < 1 or vlan.id > 4094:
+            return False, f"Invalid VLAN ID {vlan.id} - must be between 1 and 4094"
+
         # Create VLAN with name in single command
         vlan_name = vlan.name or f"VLAN{vlan.id}"
         commands = [
@@ -619,7 +707,18 @@ class BrocadeDevice(NetworkDevice):
         return " ".join(ranges)
 
     async def delete_vlan(self, vlan_id: int) -> tuple[bool, str]:
-        """Delete a VLAN."""
+        """Delete a VLAN.
+
+        BUG-003 FIX: Validates VLAN ID to prevent false success on protected VLANs.
+        """
+        # BUG-003 FIX: Prevent deletion of default VLAN 1 (Brocade silently ignores)
+        if vlan_id == 1:
+            return False, "Cannot delete VLAN 1 (default VLAN is protected)"
+
+        # BUG-002 FIX: VLAN 0 is reserved
+        if vlan_id == 0:
+            return False, "Cannot delete VLAN 0 (reserved for internal use)"
+
         return await self.execute_config_mode([f"no vlan {vlan_id}"])
 
     async def configure_port(self, port: PortConfig) -> tuple[bool, str]:
