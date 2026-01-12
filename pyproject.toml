@@ -1,0 +1,35 @@
+[project]
+name = "mcp-network-switch"
+version = "0.1.0"
+description = "MCP server for stable L2/L3 network switch configuration management"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "paramiko>=3.4.0",
+    "scp>=0.15.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0.1",
+    "pydantic>=2.5.0",
+    "tenacity>=8.2.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "pyright>=1.1.0",
+]
+
+[project.scripts]
+mcp-network-switch = "mcp_network_switch.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_network_switch"]

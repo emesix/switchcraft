@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "network-switch": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "mcp_network_switch.server"],
+      "env": {
+        "NETWORK_PASSWORD": "NikonD90",
+        "ZABBIX_API_TOKEN": "5e0fdcb6bd25c56c2915fa796d97f9dca689b8aa9baaf04dfa69b4a0e397034a"
+      }
+    }
+  }
+}

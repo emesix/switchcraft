@@ -1,0 +1,73 @@
+# VOS Network Device Inventory
+# All credentials use the universal password defined in environment variable NETWORK_PASSWORD
+# or can be overridden per-device
+
+defaults:
+  password_env: "NETWORK_PASSWORD"
+  timeout: 30
+  retries: 3
+  retry_delay: 2
+
+devices:
+  brocade-core:
+    type: brocade
+    name: "Brocade FCX624-E Core Switch"
+    host: 192.168.254.2
+    protocol: telnet
+    port: 23
+    username: admin
+    # Brocade-specific settings
+    enable_password_required: true
+    # Increase timeout for telnet unreliability
+    timeout: 45
+    retries: 5
+
+  zyxel-frontend:
+    type: zyxel
+    name: "Zyxel GS1900-24HP Frontend PoE"
+    host: 192.168.254.3
+    protocol: https
+    port: 443
+    username: admin
+    # Zyxel web API is more stable
+    timeout: 30
+    verify_ssl: false
+
+  onti-backend:
+    type: onti
+    name: "ONTI-1 S508CL-8S Backend 10G"
+    host: 192.168.254.4
+    protocol: ssh
+    port: 22
+    username: root
+    # ONTI supports SCP-based config workflow
+    use_scp_workflow: true
+    config_paths:
+      network: /etc/config/network
+      system: /etc/config/system
+      firewall: /etc/config/firewall
+
+  opnsense-gw:
+    type: opnsense
+    name: "OPNsense Gateway"
+    host: 192.168.254.1
+    protocol: ssh
+    port: 22
+    username: root
+    # OPNsense API could be added later
+    timeout: 30
+
+# SNMP communities for monitoring integration
+snmp:
+  communities:
+    vos-monitor:
+      - brocade-core
+      - onti-backend
+      - opnsense-gw
+    public:
+      - zyxel-frontend
+
+# Zabbix integration (optional)
+zabbix:
+  url: "http://192.168.254.240/zabbix"
+  api_token_env: "ZABBIX_API_TOKEN"
