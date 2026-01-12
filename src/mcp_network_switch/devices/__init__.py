@@ -2,6 +2,7 @@
 from .base import NetworkDevice, DeviceConfig
 from .brocade import BrocadeDevice
 from .onti import ONTIDevice
+from .openwrt import OpenWrtDevice
 from .zyxel import ZyxelDevice
 
 __all__ = [
@@ -9,6 +10,7 @@ __all__ = [
     "DeviceConfig",
     "BrocadeDevice",
     "ONTIDevice",
+    "OpenWrtDevice",
     "ZyxelDevice",
 ]
 
@@ -16,6 +18,7 @@ __all__ = [
 DEVICE_TYPES = {
     "brocade": BrocadeDevice,
     "onti": ONTIDevice,
+    "openwrt": OpenWrtDevice,
     "zyxel": ZyxelDevice,
 }
 
