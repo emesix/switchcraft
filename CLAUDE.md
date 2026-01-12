@@ -9,7 +9,9 @@ MCP server for managing L2/L3 network switches with unified API across different
     │
     ├── 1/1/1 ──► [Brocade FCX624-E: 192.168.254.2] ◄── Core Switch (Telnet:23)
     │                    │
-    │                    └── 1/2/2 (10G SFP+ optical) ──► [ONTI S508CL + OpenWrt: 192.168.254.4] ◄── Backend 10G (SSH:22)
+    │                    ├── 1/1/2 ──► [iZombie: 192.168.254.99] ◄── Arch Linux (SSH:22)
+    │                    │
+    │                    └── 1/2/2 (10G SFP+) ──► [ONTI S508CL + OpenWrt: 192.168.254.4] ◄── Backend 10G (SSH:22)
     │
     └── [Unknown device: 192.168.254.3] ◄── SSH:22 (was Zyxel, now shows OpenSSH 6.2)
 ```
@@ -17,9 +19,10 @@ MCP server for managing L2/L3 network switches with unified API across different
 ### Device Details
 | IP | Hardware | Software | Ports | Status |
 |----|----------|----------|-------|--------|
-| .2 | Brocade FCX624-E | FastIron | 24x1G + 4x10G SFP+ | ✅ Reachable |
+| .2 | Brocade FCX624-E | FastIron 08.0.30u | 24x1G + 4x10G SFP+ | ✅ Reachable |
 | .3 | Unknown (was Zyxel) | OpenSSH 6.2 | ? | ⚠️ Auth failed |
 | .4 | ONTI S508CL (RTL930x) | OpenWrt SNAPSHOT r32466 | 8x LAN (lan1-lan8) | ✅ Reachable |
+| .99 | iZombie | Arch Linux | 1x 1G | ✅ Reachable |
 
 ## Device Credentials
 - Password: Use `NETWORK_PASSWORD` env var (in `.env`)
