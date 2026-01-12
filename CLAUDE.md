@@ -53,6 +53,17 @@ Performance log format:
 - Config mode requires killing stale console sessions: `kill console 1`
 - **Batch execution**: Send multiple commands with newlines for speed
 
+**CRITICAL: 10G SFP+ Module Stacking Fix**
+The 10G ports (1/2/x) are stacking ports by default and will NOT bridge L2 traffic
+to the copper ports (1/1/x) until stacking is disabled:
+```
+configure terminal
+stack disable
+write memory
+```
+Without this, the 10G module operates in "stacking-ready" mode and won't forward
+regular Ethernet frames between modules. This is required for the OpenWrt link!
+
 ### VLAN Configuration (Current)
 - VLAN 1: Default, ports 1/1/11-24 and 1/2/3-4
 - VLAN 254: Management network (192.168.254.x)
@@ -90,6 +101,9 @@ python -m mcp_network_switch.server
 
 ## Known Issues
 - Device at .3: SSH responds (OpenSSH 6.2) but NETWORK_PASSWORD rejected - credentials unknown
+
+## Resolved Issues
+- **10G to 1G bridging fixed**: Required `stack disable` on Brocade (2026-01-12)
 
 ## MCP Tools Available
 - `list_devices` - List all configured devices
