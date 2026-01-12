@@ -31,7 +31,9 @@ from ..utils.connection import with_retry
 logger = logging.getLogger(__name__)
 
 # Brocade prompt patterns - handle both > (user) and # (enable) modes
-PROMPT_PATTERN = re.compile(r"[\r\n].*?(Router[>#]|config[)#])\s*$", re.IGNORECASE)
+# Matches: "telnet@FCX624-ADV Router>", "Router#", "Router(config)#", "Router(config-if)#"
+# Fixed: Pattern now works without leading newline (for initial connection)
+PROMPT_PATTERN = re.compile(r"(?:^|[\r\n]).*?Router(?:\([^)]+\))?[>#]\s*$", re.IGNORECASE)
 MORE_PATTERN = re.compile(r"--More--", re.IGNORECASE)
 
 
