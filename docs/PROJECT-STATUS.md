@@ -102,50 +102,12 @@ Switchcraft is an MCP (Model Context Protocol) server for managing L2/L3 network
 | Device | Status | Notes |
 |--------|--------|-------|
 | brocade-core | ✅ Operational | Primary test target, working |
-| onti-backend | ❌ **NEEDS RESTORE** | Config wiped during BUG-001 testing |
+| onti-backend | ✅ Operational | Port 1/2/2 was disabled during testing, re-enabled |
 | zyxel-frontend | ❌ Unreachable | Unknown status |
 
 ---
 
 ## Known Issues
-
-### Critical: ONTI Device Needs Console Restore
-The ONTI device at 192.168.254.4 had its network config wiped during testing of BUG-001 (empty content upload). To restore:
-
-1. Connect via serial console
-2. Restore `/etc/config/network` with:
-```uci
-config interface 'loopback'
-    option device 'lo'
-    option proto 'static'
-    list ipaddr '127.0.0.1/8'
-
-config globals 'globals'
-    option ula_prefix 'fd50:d25700d2:c53200c5::/48'
-
-config device 'switch'
-    option name 'switch'
-    option type 'bridge'
-    option macaddr 'd0:aa:5f:00:1a:b2'
-    list ports 'lan1'
-    list ports 'lan2'
-    list ports 'lan3'
-    list ports 'lan4'
-    list ports 'lan5'
-    list ports 'lan6'
-    list ports 'lan7'
-    list ports 'lan8'
-
-config interface 'lan'
-    option device 'switch'
-    option proto 'static'
-    option ipaddr '192.168.254.4'
-    option netmask '255.255.255.0'
-    option gateway '192.168.254.1'
-    option dns '192.168.254.1'
-```
-
-3. Run `/etc/init.d/network restart`
 
 ### Brocade 10G Port Quirk
 The 10G SFP+ ports (module 2) on Brocade FCX are stacking ports by default. To enable L2 bridging between 1G and 10G ports:

@@ -227,8 +227,11 @@
 | Device | Status | Notes |
 |--------|--------|-------|
 | brocade-core | ✅ Operational | No changes made |
-| onti-backend | ❌ UNREACHABLE | Config wiped by BUG-001 test |
+| onti-backend | ✅ Operational | Port 1/2/2 was disabled during testing, re-enabled |
 | zyxel-frontend | ❌ Unknown | Was unreachable before testing |
+
+**Note:** Initial analysis incorrectly attributed ONTI unreachability to BUG-001 (empty upload).
+Actual cause: Brocade port 1/2/2 was disabled during configure_port edge case testing.
 
 ---
 
@@ -247,7 +250,6 @@
 2. ~~**High:** Fix BUG-002 and BUG-003 (false positive success detection)~~ ✅ DONE
 3. **Medium:** Add comprehensive input validation for all string parameters
 4. **Low:** Fix BUG-004 (empty command handling)
-5. **Action Required:** Restore ONTI device (192.168.254.4) network config via console
 
 ---
 
