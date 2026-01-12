@@ -346,6 +346,10 @@ class BrocadeDevice(NetworkDevice):
         if not self._telnet:
             raise ConnectionError("Not connected")
 
+        # BUG-005 FIX: Handle empty commands list gracefully
+        if not commands:
+            return True, "", []
+
         # Join all commands with newlines - Brocade processes them sequentially
         batch = "\n".join(commands)
         cmd_count = len(commands)

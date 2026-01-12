@@ -39,6 +39,10 @@ from .config.inventory import DeviceInventory
 from .config.schema import normalize_config, diff_configs, NetworkConfig
 from .devices.base import VLANConfig, PortConfig
 from .utils.logging_config import setup_logging, timed_section
+from .utils.audit_log import ChangeTracker, setup_audit_logging, get_recent_changes
+
+# Initialize audit logging
+setup_audit_logging()
 
 # Configure logging - now with file output and performance tracking
 setup_logging()
@@ -157,7 +161,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="create_vlan",
-            description="Create or update a VLAN on a device",
+            description="Create or update a VLAN on a device. Use dry_run=true to preview changes without applying.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -182,6 +186,11 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "List of untagged (access) ports"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying (default: false)",
+                        "default": False
                     }
                 },
                 "required": ["device_id", "vlan_id"]
@@ -189,7 +198,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="delete_vlan",
-            description="Delete a VLAN from a device",
+            description="Delete a VLAN from a device. Use dry_run=true to preview changes without applying.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -200,6 +209,11 @@ async def list_tools() -> list[Tool]:
                     "vlan_id": {
                         "type": "integer",
                         "description": "VLAN ID to delete"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying (default: false)",
+                        "default": False
                     }
                 },
                 "required": ["device_id", "vlan_id"]
@@ -207,7 +221,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="configure_port",
-            description="Configure a port on a device",
+            description="Configure a port on a device. Use dry_run=true to preview changes without applying.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -230,6 +244,11 @@ async def list_tools() -> list[Tool]:
                     "speed": {
                         "type": "string",
                         "description": "Port speed (auto, 100M, 1G, 10G)"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying (default: false)",
+                        "default": False
                     }
                 },
                 "required": ["device_id", "port_name"]
@@ -379,6 +398,29 @@ async def list_tools() -> list[Tool]:
                 "required": ["device_id", "commands"]
             }
         ),
+        Tool(
+            name="get_audit_log",
+            description="Get recent configuration changes from the audit log",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Filter by device ID (optional)"
+                    },
+                    "operation": {
+                        "type": "string",
+                        "description": "Filter by operation type (e.g., 'create_vlan', 'delete_vlan', 'configure_port')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of records to return (default: 20)",
+                        "default": 20
+                    }
+                },
+                "required": []
+            }
+        ),
     ]
 
 
@@ -424,7 +466,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return await handle_delete_vlan(
                     inv,
                     arguments["device_id"],
-                    arguments["vlan_id"]
+                    arguments["vlan_id"],
+                    arguments.get("dry_run", False)
                 )
 
             elif name == "configure_port":
@@ -476,6 +519,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     inv,
                     arguments["device_id"],
                     arguments["commands"]
+                )
+
+            elif name == "get_audit_log":
+                return await handle_get_audit_log(
+                    arguments.get("device_id"),
+                    arguments.get("operation"),
+                    arguments.get("limit", 20)
                 )
 
             else:
@@ -620,9 +670,11 @@ async def handle_execute_command(
 
 
 async def handle_create_vlan(inv: DeviceInventory, args: dict) -> list[TextContent]:
-    """Create or update a VLAN."""
+    """Create or update a VLAN with dry-run support and audit logging."""
     device_id = args["device_id"]
+    dry_run = args.get("dry_run", False)
     device = inv.get_device(device_id)
+    tracker = ChangeTracker(device_id)
 
     vlan = VLANConfig(
         id=args["vlan_id"],
@@ -632,7 +684,52 @@ async def handle_create_vlan(inv: DeviceInventory, args: dict) -> list[TextConte
     )
 
     async with device:
-        success, output = await device.create_vlan(vlan)
+        # Capture before state for rollback/audit
+        before_vlans = await device.get_vlans()
+        before_state = {
+            "vlans": [{"id": v.id, "name": v.name} for v in before_vlans]
+        }
+        tracker.snapshot("before", before_state)
+
+        if dry_run:
+            # Preview mode - don't actually apply changes
+            output = f"DRY RUN: Would create VLAN {vlan.id} ({vlan.name})"
+            if vlan.tagged_ports:
+                output += f"\n  Tagged ports: {vlan.tagged_ports}"
+            if vlan.untagged_ports:
+                output += f"\n  Untagged ports: {vlan.untagged_ports}"
+            success = True
+
+            # Log the dry-run
+            tracker.log_change(
+                operation="create_vlan",
+                parameters={"vlan_id": vlan.id, "name": vlan.name},
+                success=True,
+                output=output,
+                dry_run=True,
+                before_state=before_state,
+            )
+        else:
+            # Actually create the VLAN
+            success, output = await device.create_vlan(vlan)
+
+            # Capture after state
+            after_vlans = await device.get_vlans()
+            after_state = {
+                "vlans": [{"id": v.id, "name": v.name} for v in after_vlans]
+            }
+
+            # Log the change
+            tracker.log_change(
+                operation="create_vlan",
+                parameters={"vlan_id": vlan.id, "name": vlan.name},
+                success=success,
+                output=output,
+                dry_run=False,
+                before_state=before_state,
+                after_state=after_state,
+                error=None if success else output,
+            )
 
     return [TextContent(
         type="text",
@@ -640,6 +737,7 @@ async def handle_create_vlan(inv: DeviceInventory, args: dict) -> list[TextConte
             "device_id": device_id,
             "action": "create_vlan",
             "vlan_id": args["vlan_id"],
+            "dry_run": dry_run,
             "success": success,
             "output": output,
         }, indent=2)
@@ -649,13 +747,62 @@ async def handle_create_vlan(inv: DeviceInventory, args: dict) -> list[TextConte
 async def handle_delete_vlan(
     inv: DeviceInventory,
     device_id: str,
-    vlan_id: int
+    vlan_id: int,
+    dry_run: bool = False
 ) -> list[TextContent]:
-    """Delete a VLAN."""
+    """Delete a VLAN with dry-run support and audit logging."""
     device = inv.get_device(device_id)
+    tracker = ChangeTracker(device_id)
 
     async with device:
-        success, output = await device.delete_vlan(vlan_id)
+        # Capture before state
+        before_vlans = await device.get_vlans()
+        before_state = {
+            "vlans": [{"id": v.id, "name": v.name} for v in before_vlans]
+        }
+        tracker.snapshot("before", before_state)
+
+        # Check if VLAN exists
+        vlan_exists = any(v.id == vlan_id for v in before_vlans)
+        existing_vlan = next((v for v in before_vlans if v.id == vlan_id), None)
+
+        if dry_run:
+            # Preview mode
+            if vlan_exists:
+                output = f"DRY RUN: Would delete VLAN {vlan_id} ({existing_vlan.name})"
+                success = True
+            else:
+                output = f"DRY RUN: VLAN {vlan_id} does not exist"
+                success = True
+
+            tracker.log_change(
+                operation="delete_vlan",
+                parameters={"vlan_id": vlan_id},
+                success=True,
+                output=output,
+                dry_run=True,
+                before_state=before_state,
+            )
+        else:
+            # Actually delete
+            success, output = await device.delete_vlan(vlan_id)
+
+            # Capture after state
+            after_vlans = await device.get_vlans()
+            after_state = {
+                "vlans": [{"id": v.id, "name": v.name} for v in after_vlans]
+            }
+
+            tracker.log_change(
+                operation="delete_vlan",
+                parameters={"vlan_id": vlan_id},
+                success=success,
+                output=output,
+                dry_run=False,
+                before_state=before_state,
+                after_state=after_state,
+                error=None if success else output,
+            )
 
     return [TextContent(
         type="text",
@@ -663,6 +810,7 @@ async def handle_delete_vlan(
             "device_id": device_id,
             "action": "delete_vlan",
             "vlan_id": vlan_id,
+            "dry_run": dry_run,
             "success": success,
             "output": output,
         }, indent=2)
@@ -670,9 +818,11 @@ async def handle_delete_vlan(
 
 
 async def handle_configure_port(inv: DeviceInventory, args: dict) -> list[TextContent]:
-    """Configure a port."""
+    """Configure a port with dry-run support and audit logging."""
     device_id = args["device_id"]
+    dry_run = args.get("dry_run", False)
     device = inv.get_device(device_id)
+    tracker = ChangeTracker(device_id)
 
     port = PortConfig(
         name=args["port_name"],
@@ -682,7 +832,69 @@ async def handle_configure_port(inv: DeviceInventory, args: dict) -> list[TextCo
     )
 
     async with device:
-        success, output = await device.configure_port(port)
+        # Capture before state
+        before_ports = await device.get_ports()
+        current_port = next((p for p in before_ports if p.name == port.name), None)
+        before_state = {
+            "port": port.name,
+            "current": {
+                "enabled": current_port.enabled if current_port else None,
+                "speed": current_port.speed if current_port else None,
+                "description": current_port.description if current_port else None,
+            } if current_port else None
+        }
+
+        if dry_run:
+            # Preview mode
+            changes = []
+            if current_port:
+                if current_port.enabled != port.enabled:
+                    changes.append(f"enabled: {current_port.enabled} -> {port.enabled}")
+                if port.speed and current_port.speed != port.speed:
+                    changes.append(f"speed: {current_port.speed} -> {port.speed}")
+                if port.description and current_port.description != port.description:
+                    changes.append(f"description: '{current_port.description}' -> '{port.description}'")
+
+            if changes:
+                output = f"DRY RUN: Would configure port {port.name}:\n  " + "\n  ".join(changes)
+            else:
+                output = f"DRY RUN: Port {port.name} - no changes detected"
+            success = True
+
+            tracker.log_change(
+                operation="configure_port",
+                parameters={"port": port.name, "enabled": port.enabled},
+                success=True,
+                output=output,
+                dry_run=True,
+                before_state=before_state,
+            )
+        else:
+            # Actually configure
+            success, output = await device.configure_port(port)
+
+            # Capture after state
+            after_ports = await device.get_ports()
+            after_port = next((p for p in after_ports if p.name == port.name), None)
+            after_state = {
+                "port": port.name,
+                "current": {
+                    "enabled": after_port.enabled if after_port else None,
+                    "speed": after_port.speed if after_port else None,
+                    "description": after_port.description if after_port else None,
+                } if after_port else None
+            }
+
+            tracker.log_change(
+                operation="configure_port",
+                parameters={"port": port.name, "enabled": port.enabled},
+                success=success,
+                output=output,
+                dry_run=False,
+                before_state=before_state,
+                after_state=after_state,
+                error=None if success else output,
+            )
 
     return [TextContent(
         type="text",
@@ -690,6 +902,7 @@ async def handle_configure_port(inv: DeviceInventory, args: dict) -> list[TextCo
             "device_id": device_id,
             "action": "configure_port",
             "port": args["port_name"],
+            "dry_run": dry_run,
             "success": success,
             "output": output,
         }, indent=2)
@@ -881,6 +1094,19 @@ async def handle_execute_config_batch(
     Uses batch execution to send all commands at once (much faster than
     one-by-one), with per-command error checking.
     """
+    # Handle empty commands list gracefully
+    if not commands:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "device_id": device_id,
+                "success": True,
+                "command_count": 0,
+                "results": [],
+                "raw_output": "",
+            }, indent=2)
+        )]
+
     device = inv.get_device(device_id)
     config = inv.get_device_config(device_id)
 
@@ -926,6 +1152,19 @@ async def handle_execute_batch(
     Unlike execute_config_batch, this does NOT wrap commands in conf t/exit.
     Use this for show commands to get 3x speedup over individual calls.
     """
+    # BUG-005 FIX: Handle empty commands list gracefully
+    if not commands:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "device_id": device_id,
+                "success": True,
+                "command_count": 0,
+                "results": [],
+                "raw_output": "",
+            }, indent=2)
+        )]
+
     device = inv.get_device(device_id)
     config = inv.get_device_config(device_id)
 
@@ -951,6 +1190,45 @@ async def handle_execute_batch(
             "command_count": len(commands),
             "results": results,
             "raw_output": raw_output,
+        }, indent=2)
+    )]
+
+
+async def handle_get_audit_log(
+    device_id: Optional[str] = None,
+    operation: Optional[str] = None,
+    limit: int = 20
+) -> list[TextContent]:
+    """Get recent configuration changes from the audit log."""
+    records = get_recent_changes(
+        device_id=device_id,
+        operation=operation,
+        limit=limit
+    )
+
+    # Format for display
+    formatted_records = []
+    for r in records:
+        formatted_records.append({
+            "timestamp": r.timestamp,
+            "device_id": r.device_id,
+            "operation": r.operation,
+            "dry_run": r.dry_run,
+            "success": r.success,
+            "parameters": r.parameters,
+            "error": r.error,
+        })
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "total_records": len(formatted_records),
+            "filters": {
+                "device_id": device_id,
+                "operation": operation,
+                "limit": limit,
+            },
+            "records": formatted_records,
         }, indent=2)
     )]
 

@@ -23,15 +23,14 @@ devices:
     retries: 5
 
   zyxel-frontend:
-    type: zyxel
+    type: openwrt
     name: "Zyxel GS1900-24HP Frontend PoE"
     host: 192.168.254.3
-    protocol: https
-    port: 443
+    protocol: ssh
+    port: 22
     username: admin
-    # Zyxel web API is more stable
+    # Updated: Now running BusyBox firmware with SSH access
     timeout: 30
-    verify_ssl: false
 
   onti-backend:
     type: onti
