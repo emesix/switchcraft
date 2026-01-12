@@ -113,7 +113,8 @@ python -m mcp_network_switch.server
 - `device_status` - Health check
 - `get_vlans` / `get_ports` - Read config
 - `execute_command` - Raw command execution
-- `execute_config_batch` - **NEW** Fast batch config execution (Brocade)
+- `execute_batch` - Fast batch show commands (Brocade, 3-5x faster)
+- `execute_config_batch` - Fast batch config commands (Brocade, 3x faster)
 - `create_vlan` / `delete_vlan` - VLAN management
 - `configure_port` - Port configuration
 - `save_config` - Write memory

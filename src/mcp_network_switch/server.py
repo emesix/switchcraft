@@ -38,12 +38,10 @@ from pydantic import AnyUrl
 from .config.inventory import DeviceInventory
 from .config.schema import normalize_config, diff_configs, NetworkConfig
 from .devices.base import VLANConfig, PortConfig
+from .utils.logging_config import setup_logging, timed_section
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Configure logging - now with file output and performance tracking
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # Global inventory (initialized on server start)
@@ -361,101 +359,131 @@ async def list_tools() -> list[Tool]:
                 "required": ["device_id", "commands"]
             }
         ),
+        Tool(
+            name="execute_batch",
+            description="Execute multiple show/read commands in a single fast batch (Brocade). "
+                        "3x faster than individual commands. Use for show commands, not config changes.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID (currently Brocade only)"
+                    },
+                    "commands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of show/read commands to execute (no config mode)"
+                    }
+                },
+                "required": ["device_id", "commands"]
+            }
+        ),
     ]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
-    try:
-        inv = get_inventory()
+    device_id = arguments.get("device_id", "N/A")
 
-        if name == "list_devices":
-            return await handle_list_devices(inv)
+    async with timed_section(f"tool:{name}", device_id=device_id):
+        try:
+            inv = get_inventory()
 
-        elif name == "device_status":
-            return await handle_device_status(inv, arguments["device_id"])
+            if name == "list_devices":
+                return await handle_list_devices(inv)
 
-        elif name == "get_config":
-            return await handle_get_config(
-                inv,
-                arguments["device_id"],
-                arguments.get("include_raw", False)
-            )
+            elif name == "device_status":
+                return await handle_device_status(inv, arguments["device_id"])
 
-        elif name == "get_vlans":
-            return await handle_get_vlans(inv, arguments["device_id"])
+            elif name == "get_config":
+                return await handle_get_config(
+                    inv,
+                    arguments["device_id"],
+                    arguments.get("include_raw", False)
+                )
 
-        elif name == "get_ports":
-            return await handle_get_ports(inv, arguments["device_id"])
+            elif name == "get_vlans":
+                return await handle_get_vlans(inv, arguments["device_id"])
 
-        elif name == "execute_command":
-            return await handle_execute_command(
-                inv,
-                arguments["device_id"],
-                arguments["command"]
-            )
+            elif name == "get_ports":
+                return await handle_get_ports(inv, arguments["device_id"])
 
-        elif name == "create_vlan":
-            return await handle_create_vlan(inv, arguments)
+            elif name == "execute_command":
+                return await handle_execute_command(
+                    inv,
+                    arguments["device_id"],
+                    arguments["command"]
+                )
 
-        elif name == "delete_vlan":
-            return await handle_delete_vlan(
-                inv,
-                arguments["device_id"],
-                arguments["vlan_id"]
-            )
+            elif name == "create_vlan":
+                return await handle_create_vlan(inv, arguments)
 
-        elif name == "configure_port":
-            return await handle_configure_port(inv, arguments)
+            elif name == "delete_vlan":
+                return await handle_delete_vlan(
+                    inv,
+                    arguments["device_id"],
+                    arguments["vlan_id"]
+                )
 
-        elif name == "save_config":
-            return await handle_save_config(inv, arguments["device_id"])
+            elif name == "configure_port":
+                return await handle_configure_port(inv, arguments)
 
-        elif name == "diff_config":
-            return await handle_diff_config(
-                inv,
-                arguments["device_id"],
-                arguments["expected_config"]
-            )
+            elif name == "save_config":
+                return await handle_save_config(inv, arguments["device_id"])
 
-        elif name == "download_config_file":
-            return await handle_download_config(
-                inv,
-                arguments["device_id"],
-                arguments["config_name"]
-            )
+            elif name == "diff_config":
+                return await handle_diff_config(
+                    inv,
+                    arguments["device_id"],
+                    arguments["expected_config"]
+                )
 
-        elif name == "upload_config_file":
-            return await handle_upload_config(
-                inv,
-                arguments["device_id"],
-                arguments["config_name"],
-                arguments["content"],
-                arguments.get("reload", True)
-            )
+            elif name == "download_config_file":
+                return await handle_download_config(
+                    inv,
+                    arguments["device_id"],
+                    arguments["config_name"]
+                )
 
-        elif name == "batch_command":
-            return await handle_batch_command(
-                inv,
-                arguments["device_ids"],
-                arguments["command"]
-            )
+            elif name == "upload_config_file":
+                return await handle_upload_config(
+                    inv,
+                    arguments["device_id"],
+                    arguments["config_name"],
+                    arguments["content"],
+                    arguments.get("reload", True)
+                )
 
-        elif name == "execute_config_batch":
-            return await handle_execute_config_batch(
-                inv,
-                arguments["device_id"],
-                arguments["commands"],
-                arguments.get("stop_on_error", True)
-            )
+            elif name == "batch_command":
+                return await handle_batch_command(
+                    inv,
+                    arguments["device_ids"],
+                    arguments["command"]
+                )
 
-        else:
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            elif name == "execute_config_batch":
+                return await handle_execute_config_batch(
+                    inv,
+                    arguments["device_id"],
+                    arguments["commands"],
+                    arguments.get("stop_on_error", True)
+                )
 
-    except Exception as e:
-        logger.exception(f"Tool {name} failed")
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
+            elif name == "execute_batch":
+                return await handle_execute_batch(
+                    inv,
+                    arguments["device_id"],
+                    arguments["commands"]
+                )
+
+            else:
+                return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+        except Exception as e:
+            logger.exception(f"Tool {name} failed")
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
 
 # === TOOL HANDLERS ===
@@ -866,6 +894,45 @@ async def handle_execute_config_batch(
         )
 
     # Build response
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "device_id": device_id,
+            "success": success,
+            "command_count": len(commands),
+            "results": results,
+            "raw_output": raw_output,
+        }, indent=2)
+    )]
+
+
+async def handle_execute_batch(
+    inv: DeviceInventory,
+    device_id: str,
+    commands: list[str]
+) -> list[TextContent]:
+    """Execute multiple show/read commands in a single fast batch.
+
+    Unlike execute_config_batch, this does NOT wrap commands in conf t/exit.
+    Use this for show commands to get 3x speedup over individual calls.
+    """
+    device = inv.get_device(device_id)
+    config = inv.get_device_config(device_id)
+
+    # Currently only Brocade supports batch execution
+    if config.get("type") != "brocade":
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "error": "Batch execution currently only supported on Brocade devices",
+                "device_type": config.get("type"),
+            }, indent=2)
+        )]
+
+    async with device:
+        # Direct batch execution without config mode wrapper
+        success, raw_output, results = await device.execute_batch(commands)
+
     return [TextContent(
         type="text",
         text=json.dumps({
