@@ -226,9 +226,9 @@
 
 | Device | Status | Notes |
 |--------|--------|-------|
-| brocade-core | ✅ Operational | No changes made |
+| brocade-core | ✅ Operational | Primary test target |
 | onti-backend | ✅ Operational | Port 1/2/2 was disabled during testing, re-enabled |
-| zyxel-frontend | ❌ Unknown | Was unreachable before testing |
+| zyxel-frontend | ✅ Operational | HTTP on port 443, firmware V2.70(AAHM.3) |
 
 **Note:** Initial analysis incorrectly attributed ONTI unreachability to BUG-001 (empty upload).
 Actual cause: Brocade port 1/2/2 was disabled during configure_port edge case testing.

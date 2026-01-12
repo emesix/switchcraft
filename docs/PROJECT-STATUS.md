@@ -103,7 +103,7 @@ Switchcraft is an MCP (Model Context Protocol) server for managing L2/L3 network
 |--------|--------|-------|
 | brocade-core | ✅ Operational | Primary test target, working |
 | onti-backend | ✅ Operational | Port 1/2/2 was disabled during testing, re-enabled |
-| zyxel-frontend | ❌ Unreachable | Unknown status |
+| zyxel-frontend | ✅ Operational | HTTP on port 443, firmware V2.70(AAHM.3) |
 
 ---
 
