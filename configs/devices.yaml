@@ -47,23 +47,12 @@ devices:
       system: /etc/config/system
       firewall: /etc/config/firewall
 
-  opnsense-gw:
-    type: opnsense
-    name: "OPNsense Gateway"
-    host: 192.168.254.1
-    protocol: ssh
-    port: 22
-    username: root
-    # OPNsense API could be added later
-    timeout: 30
-
 # SNMP communities for monitoring integration
 snmp:
   communities:
     vos-monitor:
       - brocade-core
       - onti-backend
-      - opnsense-gw
     public:
       - zyxel-frontend
 

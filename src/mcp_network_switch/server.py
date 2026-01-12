@@ -336,6 +336,31 @@ async def list_tools() -> list[Tool]:
                 "required": ["device_ids", "command"]
             }
         ),
+        Tool(
+            name="execute_config_batch",
+            description="Execute multiple config commands in a single fast batch (Brocade). "
+                        "Sends all commands at once, checks each for errors, stops on first failure.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID (currently Brocade only)"
+                    },
+                    "commands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of config commands to execute (will be wrapped in conf t/exit)"
+                    },
+                    "stop_on_error": {
+                        "type": "boolean",
+                        "description": "Stop execution on first error (default: true)",
+                        "default": True
+                    }
+                },
+                "required": ["device_id", "commands"]
+            }
+        ),
     ]
 
 
@@ -415,6 +440,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 inv,
                 arguments["device_ids"],
                 arguments["command"]
+            )
+
+        elif name == "execute_config_batch":
+            return await handle_execute_config_batch(
+                inv,
+                arguments["device_id"],
+                arguments["commands"],
+                arguments.get("stop_on_error", True)
             )
 
         else:
@@ -795,6 +828,52 @@ async def handle_batch_command(
         text=json.dumps({
             "command": command,
             "results": results,
+        }, indent=2)
+    )]
+
+
+async def handle_execute_config_batch(
+    inv: DeviceInventory,
+    device_id: str,
+    commands: list[str],
+    stop_on_error: bool
+) -> list[TextContent]:
+    """Execute multiple config commands in a single fast batch.
+
+    Uses batch execution to send all commands at once (much faster than
+    one-by-one), with per-command error checking.
+    """
+    device = inv.get_device(device_id)
+    config = inv.get_device_config(device_id)
+
+    # Currently only Brocade supports batch execution
+    if config.get("type") != "brocade":
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "error": "Batch config execution currently only supported on Brocade devices",
+                "device_type": config.get("type"),
+                "hint": "Use execute_command with newline-separated commands for other devices",
+            }, indent=2)
+        )]
+
+    async with device:
+        # Use the fast batch execution (wraps commands in conf t / exit)
+        full_commands = ["conf t"] + commands + ["exit"]
+        success, raw_output, results = await device.execute_batch(
+            full_commands,
+            stop_on_error=stop_on_error
+        )
+
+    # Build response
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "device_id": device_id,
+            "success": success,
+            "command_count": len(commands),
+            "results": results,
+            "raw_output": raw_output,
         }, indent=2)
     )]
 

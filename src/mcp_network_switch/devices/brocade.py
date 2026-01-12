@@ -31,9 +31,7 @@ from ..utils.connection import with_retry
 logger = logging.getLogger(__name__)
 
 # Brocade prompt patterns - handle both > (user) and # (enable) modes
-# Matches: "telnet@FCX624-ADV Router>", "Router#", "Router(config)#", "Router(config-if)#"
-# Fixed: Pattern now works without leading newline (for initial connection)
-PROMPT_PATTERN = re.compile(r"(?:^|[\r\n]).*?Router(?:\([^)]+\))?[>#]\s*$", re.IGNORECASE)
+PROMPT_PATTERN = re.compile(r"[\r\n].*?(Router[>#]|config[)#])\s*$", re.IGNORECASE)
 MORE_PATTERN = re.compile(r"--More--", re.IGNORECASE)
 
 
@@ -216,6 +214,33 @@ class BrocadeDevice(NetworkDevice):
         except Exception as e:
             return DeviceStatus(reachable=False, error=str(e))
 
+    # Error patterns that indicate command failure
+    ERROR_PATTERNS = [
+        "Invalid input",
+        "Error:",
+        "error:",
+        "not found",
+        "Please disable",  # e.g., "Please disable dual mode..."
+        "cannot ",
+        "denied",
+        "failed",
+        "Incomplete command",
+    ]
+
+    def _has_error(self, output: str) -> Optional[str]:
+        """Check if output contains error indicators.
+
+        Returns the error message if found, None otherwise.
+        """
+        for pattern in self.ERROR_PATTERNS:
+            if pattern.lower() in output.lower():
+                # Extract the error line
+                for line in output.split("\n"):
+                    if pattern.lower() in line.lower():
+                        return line.strip()
+                return pattern
+        return None
+
     @with_retry(max_attempts=3, min_wait=1, max_wait=5)
     async def execute(self, command: str) -> tuple[bool, str]:
         """Execute a command on the Brocade switch."""
@@ -225,7 +250,8 @@ class BrocadeDevice(NetworkDevice):
         try:
             output = await self._telnet.send_command(command, timeout=self.config.timeout)
             # Check for error messages
-            if "Invalid input" in output or "Error" in output:
+            error = self._has_error(output)
+            if error:
                 return False, output
             return True, output
         except Exception as e:
@@ -233,28 +259,148 @@ class BrocadeDevice(NetworkDevice):
             self._connected = False
             raise
 
+    async def execute_batch(
+        self,
+        commands: list[str],
+        stop_on_error: bool = True
+    ) -> tuple[bool, str, list[dict]]:
+        """Execute multiple commands in a single batch (FAST!).
+
+        Sends all commands separated by newlines in one transmission,
+        then parses the output to check for errors per command.
+
+        Args:
+            commands: List of commands to execute
+            stop_on_error: If True, report failure on first error (default)
+
+        Returns:
+            Tuple of (overall_success, full_output, per_command_results)
+            where per_command_results is a list of:
+                {"command": str, "success": bool, "output": str, "error": Optional[str]}
+        """
+        if not self._telnet:
+            raise ConnectionError("Not connected")
+
+        # Join all commands with newlines - Brocade processes them sequentially
+        batch = "\n".join(commands)
+
+        try:
+            output = await self._telnet.send_command(batch, timeout=self.config.timeout)
+        except Exception as e:
+            logger.error(f"Batch execution failed on {self.device_id}: {e}")
+            self._connected = False
+            raise
+
+        # Parse output to extract per-command results
+        results = self._parse_batch_output(output, commands, stop_on_error)
+
+        # Overall success = no command failed
+        overall_success = all(r["success"] for r in results)
+
+        return overall_success, output, results
+
+    def _parse_batch_output(
+        self,
+        output: str,
+        commands: list[str],
+        stop_on_error: bool
+    ) -> list[dict]:
+        """Parse batch command output to extract per-command results.
+
+        Brocade echoes each command followed by its output/prompt.
+        We track which command we're on by looking for command echoes.
+        """
+        results = []
+        lines = output.split("\n")
+
+        # Track current command and its output
+        current_cmd_idx = 0
+        current_output_lines = []
+
+        for line in lines:
+            line_stripped = line.strip()
+
+            # Check if this line contains the next command echo
+            # Brocade echoes commands, so we look for our command in the line
+            if current_cmd_idx < len(commands):
+                cmd = commands[current_cmd_idx]
+                # Check if this line is the command echo (contains the command text)
+                if cmd in line_stripped or line_stripped.endswith(cmd):
+                    # If we have accumulated output from previous command, save it
+                    if current_cmd_idx > 0 and current_output_lines:
+                        cmd_output = "\n".join(current_output_lines)
+                        prev_cmd = commands[current_cmd_idx - 1]
+                        error = self._has_error(cmd_output)
+                        results.append({
+                            "command": prev_cmd,
+                            "success": error is None,
+                            "output": cmd_output.strip(),
+                            "error": error
+                        })
+
+                        # Stop if we hit an error and stop_on_error is True
+                        if error and stop_on_error:
+                            # Mark remaining commands as not executed
+                            for remaining_cmd in commands[current_cmd_idx:]:
+                                results.append({
+                                    "command": remaining_cmd,
+                                    "success": False,
+                                    "output": "",
+                                    "error": "Not executed (previous command failed)"
+                                })
+                            return results
+
+                    current_output_lines = []
+                    current_cmd_idx += 1
+                    continue
+
+            # Accumulate output lines (skip prompt lines)
+            if line_stripped and not re.match(r".*Router[#>(\[]", line_stripped):
+                current_output_lines.append(line_stripped)
+
+        # Handle the last command's output
+        if current_cmd_idx > 0:
+            cmd_output = "\n".join(current_output_lines)
+            last_cmd = commands[current_cmd_idx - 1] if current_cmd_idx <= len(commands) else commands[-1]
+            error = self._has_error(cmd_output)
+            results.append({
+                "command": last_cmd,
+                "success": error is None,
+                "output": cmd_output.strip(),
+                "error": error
+            })
+
+        # If we didn't process all commands, mark them
+        while len(results) < len(commands):
+            idx = len(results)
+            results.append({
+                "command": commands[idx],
+                "success": True,  # No error detected
+                "output": "",
+                "error": None
+            })
+
+        return results
+
     async def execute_config_mode(self, commands: list[str]) -> tuple[bool, str]:
-        """Execute commands in config mode."""
-        all_output = []
+        """Execute commands in config mode using batch execution.
 
-        # Enter config mode
-        success, output = await self.execute("configure terminal")
-        if not success:
-            return False, f"Failed to enter config mode: {output}"
-        all_output.append(output)
+        FAST: Sends all commands in a single batch instead of one-by-one.
+        """
+        # Wrap commands with config mode entry/exit
+        full_commands = ["conf t"] + commands + ["exit"]
 
-        # Execute each command
-        for cmd in commands:
-            success, output = await self.execute(cmd)
-            all_output.append(f"{cmd}: {output}")
-            if not success:
-                # Exit config mode on error
-                await self.execute("end")
-                return False, "\n".join(all_output)
+        success, output, results = await self.execute_batch(full_commands)
 
-        # Exit config mode
-        await self.execute("end")
-        return True, "\n".join(all_output)
+        # Build summary output showing each command result
+        summary_lines = []
+        for r in results:
+            status = "OK" if r["success"] else f"FAIL: {r['error']}"
+            summary_lines.append(f"{r['command']}: {status}")
+            if r["output"]:
+                summary_lines.append(f"  {r['output']}")
+
+        return success, "\n".join(summary_lines)
 
     async def get_running_config(self) -> str:
         """Get running configuration."""

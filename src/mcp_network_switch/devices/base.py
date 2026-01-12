@@ -1,6 +1,8 @@
 """Base device abstraction for network switches."""
+import asyncio
 import os
 import logging
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -189,8 +191,40 @@ class NetworkDevice(ABC):
         """Put config file contents by name (for devices that support it)."""
         return False, "put_config_file not supported on this device"
 
+    # Connectivity check
+    async def ping_check(self, timeout: float = 2.0) -> tuple[bool, str]:
+        """Quick ping check to verify device is reachable before attempting connection.
+
+        Returns:
+            Tuple of (reachable, message)
+        """
+        try:
+            # Run ping asynchronously with short timeout
+            # -c 1: send 1 packet, -W: timeout in seconds
+            proc = await asyncio.create_subprocess_exec(
+                "ping", "-c", "1", "-W", str(int(timeout)), self.host,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            returncode = await asyncio.wait_for(proc.wait(), timeout=timeout + 1)
+
+            if returncode == 0:
+                return True, f"Device {self.host} is reachable"
+            else:
+                return False, f"Device {self.host} is not responding to ping"
+
+        except asyncio.TimeoutError:
+            return False, f"Ping to {self.host} timed out"
+        except Exception as e:
+            return False, f"Ping check failed: {e}"
+
     # Context manager support
     async def __aenter__(self):
+        # Quick ping check before attempting full connection
+        reachable, message = await self.ping_check()
+        if not reachable:
+            raise ConnectionError(f"Device unreachable: {message}")
+
         await self.connect()
         return self
 
