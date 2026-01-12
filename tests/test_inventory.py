@@ -2,7 +2,6 @@
 import pytest
 import tempfile
 import os
-from pathlib import Path
 from mcp_network_switch.config.inventory import DeviceInventory
 
 
@@ -117,7 +116,7 @@ class TestDeviceInventoryNoConfig:
 
     def test_find_config_not_found(self):
         """FileNotFoundError raised when no config file found."""
-        with pytest.raises(FileNotFoundError) as exc_info:
+        with pytest.raises(FileNotFoundError):
             # Use a non-existent path
             DeviceInventory("/nonexistent/path/devices.yaml")
         # The error should be from file reading, not find_config

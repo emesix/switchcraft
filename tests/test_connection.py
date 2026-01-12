@@ -1,9 +1,7 @@
 """Tests for connection utilities."""
 import pytest
-import asyncio
 from mcp_network_switch.utils.connection import (
     with_retry,
-    ConnectionManager,
     CommandResult,
     RETRYABLE_EXCEPTIONS,
 )

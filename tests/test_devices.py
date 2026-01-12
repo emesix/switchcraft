@@ -1,5 +1,4 @@
 """Tests for device base classes and utilities."""
-import pytest
 from mcp_network_switch.devices.base import (
     DeviceConfig,
     VLANConfig,

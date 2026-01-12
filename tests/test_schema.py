@@ -1,10 +1,7 @@
 """Tests for configuration schema and normalization."""
-import pytest
 from mcp_network_switch.config.schema import (
     NormalizedVLAN,
-    NormalizedPort,
     NetworkConfig,
-    ConfigDiff,
     normalize_port_name,
     normalize_config,
     diff_configs,
