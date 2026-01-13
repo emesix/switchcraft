@@ -277,18 +277,39 @@ class BrocadeDevice(NetworkDevice):
         "is currently reserved",  # BUG-002 FIX: e.g., "VLAN 0 is currently reserved"
     ]
 
+    # Informational patterns that look like errors but are actually OK
+    # These override ERROR_PATTERNS when found on the same line
+    INFO_PATTERNS = [
+        "already a member",      # "Port(s) ethe 1/2/1 are already a member of VLAN 254"
+        "Added untagged port",   # Success message
+        "Added tagged port",     # Success message
+        "Removed untagged port", # Success message
+        "Removed tagged port",   # Success message
+    ]
+
     def _has_error(self, output: str) -> Optional[str]:
         """Check if output contains error indicators.
 
         Returns the error message if found, None otherwise.
+        Ignores lines that match INFO_PATTERNS (false positives).
         """
+        output_lower = output.lower()
+
         for pattern in self.ERROR_PATTERNS:
-            if pattern.lower() in output.lower():
+            if pattern.lower() in output_lower:
                 # Extract the error line
                 for line in output.split("\n"):
-                    if pattern.lower() in line.lower():
-                        return line.strip()
-                return pattern
+                    line_lower = line.lower()
+                    if pattern.lower() in line_lower:
+                        # Check if this line matches an INFO_PATTERN (false positive)
+                        is_info = any(
+                            info.lower() in line_lower
+                            for info in self.INFO_PATTERNS
+                        )
+                        if not is_info:
+                            return line.strip()
+                # Pattern found but all matching lines were info patterns
+                # Continue checking other error patterns
         return None
 
     @with_retry(max_attempts=3, min_wait=1, max_wait=5)

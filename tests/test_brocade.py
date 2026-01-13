@@ -79,3 +79,67 @@ class TestBrocadePortParsing:
         """Ports are sorted before formatting."""
         result = device._format_port_range(["1/1/4", "1/1/1", "1/1/3", "1/1/2"])
         assert result == "1/1/1 to 1/1/4"
+
+
+class TestBrocadeErrorDetection:
+    """Tests for Brocade error detection logic."""
+
+    @pytest.fixture
+    def device(self):
+        """Create a Brocade device for testing."""
+        config = DeviceConfig(
+            type="brocade",
+            name="Test Brocade",
+            host="192.168.1.1",
+            protocol="telnet",
+            port=23,
+            username="admin",
+            password="test",
+        )
+        return BrocadeDevice("test-brocade", config)
+
+    def test_real_error_detected(self, device):
+        """Real errors should still be detected."""
+        output = "Invalid input -> 1/2/1 to 1/2/4\nType ? for a list"
+        error = device._has_error(output)
+        assert error is not None
+        assert "Invalid input" in error
+
+    def test_already_member_not_error(self, device):
+        """'already a member' is informational, not an error."""
+        output = "Port(s) ethe 1/2/1 are already a member of VLAN 254"
+        error = device._has_error(output)
+        assert error is None
+
+    def test_added_port_not_error(self, device):
+        """'Added untagged port' is success, not an error."""
+        output = "Added untagged port(s) ethe 1/2/3 to port-vlan 254."
+        error = device._has_error(output)
+        assert error is None
+
+    def test_removed_port_not_error(self, device):
+        """'Removed tagged port' is success, not an error."""
+        output = "Removed tagged port(s) ethe 1/2/1 from port-vlan 254."
+        error = device._has_error(output)
+        assert error is None
+
+    def test_please_disable_is_error(self, device):
+        """'Please disable dual mode' is a real error."""
+        output = "Please disable dual mode for port ethe 1/2/1 before removing the ports from the VLAN."
+        error = device._has_error(output)
+        assert error is not None
+        assert "Please disable" in error
+
+    def test_mixed_output_with_info(self, device):
+        """Mixed output with info pattern should not report error."""
+        output = """vlan 254
+Port(s) ethe 1/2/1 are already a member of VLAN 254
+exit"""
+        error = device._has_error(output)
+        assert error is None
+
+    def test_command_not_found_is_error(self, device):
+        """Command not found is an error."""
+        output = "Error: command not found"
+        error = device._has_error(output)
+        assert error is not None
