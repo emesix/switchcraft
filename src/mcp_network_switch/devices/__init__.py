@@ -4,6 +4,7 @@ from .brocade import BrocadeDevice
 from .onti import ONTIDevice
 from .openwrt import OpenWrtDevice
 from .zyxel import ZyxelDevice
+from .zyxel_cli import ZyxelCLIDevice
 
 __all__ = [
     "NetworkDevice",
@@ -12,6 +13,7 @@ __all__ = [
     "ONTIDevice",
     "OpenWrtDevice",
     "ZyxelDevice",
+    "ZyxelCLIDevice",
 ]
 
 # Device type registry
@@ -20,6 +22,7 @@ DEVICE_TYPES = {
     "onti": ONTIDevice,
     "openwrt": OpenWrtDevice,
     "zyxel": ZyxelDevice,
+    "zyxel-cli": ZyxelCLIDevice,
 }
 
 

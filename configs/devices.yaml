@@ -31,6 +31,15 @@ devices:
     username: admin
     timeout: 30
 
+  zyxel-cli:
+    type: zyxel-cli
+    name: "Zyxel GS1900-24HP Frontend PoE (CLI)"
+    host: 192.168.254.3
+    protocol: ssh
+    port: 22
+    username: admin
+    timeout: 30
+
   onti-backend:
     type: openwrt
     name: "ONTI-1 S508CL-8S Backend 10G"
