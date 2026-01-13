@@ -19,6 +19,11 @@ Tools exposed:
 - diff_config: Compare expected vs actual config
 - download_config_file: Download config via SCP (ONTI)
 - upload_config_file: Upload config via SCP (ONTI)
+- apply_config: Apply desired state configuration (declarative)
+- config_save: Save current device state as desired config
+- config_status: Show drift status (desired vs actual)
+- config_snapshot: Create point-in-time backup of configs
+- config_restore: Restore configs from snapshot
 """
 import asyncio
 import json
@@ -38,6 +43,7 @@ from pydantic import AnyUrl
 from .config.inventory import DeviceInventory
 from .config.schema import normalize_config, diff_configs, NetworkConfig
 from .config_engine import ConfigEngine
+from .config_store import ConfigStore
 from .devices.base import VLANConfig, PortConfig
 from .utils.logging_config import setup_logging, timed_section
 from .utils.audit_log import ChangeTracker, setup_audit_logging, get_recent_changes
@@ -51,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 # Global inventory (initialized on server start)
 inventory: Optional[DeviceInventory] = None
+config_store: Optional[ConfigStore] = None
 
 
 def get_inventory() -> DeviceInventory:
@@ -60,6 +67,14 @@ def get_inventory() -> DeviceInventory:
         config_path = os.environ.get("MCP_NETWORK_CONFIG")
         inventory = DeviceInventory(config_path)
     return inventory
+
+
+def get_config_store() -> ConfigStore:
+    """Get or create the config store."""
+    global config_store
+    if config_store is None:
+        config_store = ConfigStore()
+    return config_store
 
 
 # Create MCP server
@@ -459,6 +474,183 @@ Use dry_run=true to preview changes without applying.""",
                 "required": ["config"]
             }
         ),
+        # === Configuration Management Tools ===
+        Tool(
+            name="config_save",
+            description="""Save current device state as the desired configuration.
+
+This captures the current VLAN and port configuration from the device and stores it
+as the desired state in ~/.switchcraft/configs/desired/. Future drift checks will
+compare against this saved state.
+
+Use this to:
+- Initialize config management for a device
+- Accept manual changes as the new baseline
+- Create a known-good configuration checkpoint""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID to save config from"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Source tag (manual, auto_save, sync)",
+                        "default": "manual"
+                    }
+                },
+                "required": ["device_id"]
+            }
+        ),
+        Tool(
+            name="config_status",
+            description="""Show configuration sync status for devices.
+
+Compares the desired state (from ~/.switchcraft/configs/desired/) against
+the actual device configuration. Reports:
+- IN SYNC: Device matches desired state
+- DRIFT: Device has changed from desired state
+- UNMANAGED: No desired state defined yet
+- UNREACHABLE: Cannot connect to device
+
+Use device_id to check a specific device, or omit for all devices.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID to check (optional, defaults to all)"
+                    },
+                    "detailed": {
+                        "type": "boolean",
+                        "description": "Include detailed drift information",
+                        "default": False
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="config_snapshot",
+            description="""Create a snapshot of current desired configurations.
+
+Saves all (or specified) desired configs to a timestamped snapshot directory.
+Snapshots can be restored later with config_restore.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Snapshot name (default: timestamp)"
+                    },
+                    "device_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Devices to snapshot (default: all)"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="config_restore",
+            description="""Restore desired configurations from a snapshot.
+
+Restores saved configs from a snapshot back to the desired directory.
+Does NOT apply to devices - use config_sync to apply after restore.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Snapshot name to restore from"
+                    },
+                    "device_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Devices to restore (default: all in snapshot)"
+                    }
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="config_history",
+            description="""View version history for device configurations.
+
+Shows git commit history for config changes. Each change is tracked with:
+- Commit hash for reference
+- Timestamp and author
+- Commit message describing the change
+
+Use revision (e.g., HEAD~3, commit hash) with config_rollback to restore.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID to show history for (optional, shows all if omitted)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum commits to return (default: 20)",
+                        "default": 20
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="config_rollback",
+            description="""Rollback a device config to a previous version.
+
+Restores a config from a git revision (commit hash or reference like HEAD~1).
+Creates a new commit recording the rollback.
+
+Does NOT apply to devices - use config_status then apply_config to sync.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID to rollback"
+                    },
+                    "revision": {
+                        "type": "string",
+                        "description": "Git revision to restore from (e.g., HEAD~1, abc1234)"
+                    }
+                },
+                "required": ["device_id", "revision"]
+            }
+        ),
+        Tool(
+            name="config_diff",
+            description="""Show diff between config versions.
+
+Compares two revisions of a device config and shows changes.
+Useful for reviewing what changed between versions.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID to diff"
+                    },
+                    "revision1": {
+                        "type": "string",
+                        "description": "First revision (older, default: HEAD~1)",
+                        "default": "HEAD~1"
+                    },
+                    "revision2": {
+                        "type": "string",
+                        "description": "Second revision (newer, default: HEAD)",
+                        "default": "HEAD"
+                    }
+                },
+                "required": ["device_id"]
+            }
+        ),
     ]
 
 
@@ -572,6 +764,51 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments["config"],
                     arguments.get("dry_run", False),
                     arguments.get("audit_context", "")
+                )
+
+            elif name == "config_save":
+                return await handle_config_save(
+                    inv,
+                    arguments["device_id"],
+                    arguments.get("source", "manual")
+                )
+
+            elif name == "config_status":
+                return await handle_config_status(
+                    inv,
+                    arguments.get("device_id"),
+                    arguments.get("detailed", False)
+                )
+
+            elif name == "config_snapshot":
+                return await handle_config_snapshot(
+                    arguments.get("name"),
+                    arguments.get("device_ids")
+                )
+
+            elif name == "config_restore":
+                return await handle_config_restore(
+                    arguments["name"],
+                    arguments.get("device_ids")
+                )
+
+            elif name == "config_history":
+                return await handle_config_history(
+                    arguments.get("device_id"),
+                    arguments.get("limit", 20)
+                )
+
+            elif name == "config_rollback":
+                return await handle_config_rollback(
+                    arguments["device_id"],
+                    arguments["revision"]
+                )
+
+            elif name == "config_diff":
+                return await handle_config_diff_versions(
+                    arguments["device_id"],
+                    arguments.get("revision1", "HEAD~1"),
+                    arguments.get("revision2", "HEAD")
                 )
 
             else:
@@ -1339,6 +1576,358 @@ async def handle_apply_config(
     return [TextContent(
         type="text",
         text=json.dumps(response, indent=2)
+    )]
+
+
+# === CONFIG MANAGEMENT HANDLERS ===
+
+async def handle_config_save(
+    inv: DeviceInventory,
+    device_id: str,
+    source: str
+) -> list[TextContent]:
+    """
+    Save current device state as the desired configuration.
+
+    Fetches VLANs and ports from device and stores as desired state.
+    """
+    store = get_config_store()
+    device = inv.get_device(device_id)
+
+    try:
+        async with device:
+            vlans = await device.get_vlans()
+            ports = await device.get_ports()
+
+        # Convert to config dict format
+        config = {
+            "vlans": {},
+            "ports": {},
+        }
+
+        for vlan in vlans:
+            config["vlans"][vlan.id] = {
+                "name": vlan.name,
+                "untagged_ports": vlan.untagged_ports,
+                "tagged_ports": vlan.tagged_ports,
+            }
+
+        for port in ports:
+            config["ports"][port.name] = {
+                "enabled": port.enabled,
+                "speed": port.speed,
+                "description": port.description,
+            }
+
+        # Save to config store
+        stored = store.save_desired_config(
+            device_id=device_id,
+            config=config,
+            source=source,
+        )
+
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "device_id": device_id,
+                "action": "config_save",
+                "success": True,
+                "version": stored.version,
+                "checksum": stored.checksum,
+                "vlan_count": len(config["vlans"]),
+                "port_count": len(config["ports"]),
+                "saved_to": str(store.desired_dir / f"{device_id}.yaml"),
+            }, indent=2)
+        )]
+
+    except Exception as e:
+        logger.exception(f"Failed to save config for {device_id}")
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "device_id": device_id,
+                "action": "config_save",
+                "success": False,
+                "error": str(e),
+            }, indent=2)
+        )]
+
+
+async def handle_config_status(
+    inv: DeviceInventory,
+    device_id: Optional[str],
+    detailed: bool
+) -> list[TextContent]:
+    """
+    Show configuration sync status for devices.
+
+    Compares desired state against actual device configuration.
+    """
+    store = get_config_store()
+
+    # Determine which devices to check
+    if device_id:
+        device_ids = [device_id]
+    else:
+        device_ids = inv.get_device_ids()
+
+    results = []
+
+    for did in device_ids:
+        status = {
+            "device_id": did,
+            "status": "UNKNOWN",
+        }
+
+        # Check if we have a desired config
+        desired = store.get_desired_config(did)
+        if not desired:
+            status["status"] = "UNMANAGED"
+            status["message"] = "No desired config defined"
+            results.append(status)
+            continue
+
+        # Try to connect and compare
+        try:
+            device = inv.get_device(did)
+
+            async with device:
+                vlans = await device.get_vlans()
+                ports = await device.get_ports()
+
+            # Convert to dict for drift detection
+            actual_vlans = [
+                {
+                    "id": v.id,
+                    "name": v.name,
+                    "untagged_ports": v.untagged_ports,
+                    "tagged_ports": v.tagged_ports,
+                }
+                for v in vlans
+            ]
+            actual_ports = [
+                {
+                    "name": p.name,
+                    "enabled": p.enabled,
+                    "speed": p.speed,
+                    "description": p.description,
+                }
+                for p in ports
+            ]
+
+            # Calculate drift
+            drift = store.calculate_drift(did, actual_vlans, actual_ports)
+
+            if drift.in_sync:
+                status["status"] = "IN_SYNC"
+                status["message"] = "Device matches desired state"
+            else:
+                status["status"] = "DRIFT"
+                status["drift_count"] = drift.drift_count
+                status["message"] = f"{drift.drift_count} differences detected"
+
+                if detailed:
+                    status["drift_items"] = [
+                        {
+                            "category": item.category,
+                            "item_id": item.item_id,
+                            "drift_type": item.drift_type,
+                            "details": item.details,
+                        }
+                        for item in drift.items
+                    ]
+
+            status["version"] = desired.version
+            status["last_saved"] = desired.updated_at.isoformat() if desired.updated_at else None
+
+        except Exception as e:
+            status["status"] = "UNREACHABLE"
+            status["error"] = str(e)
+
+        results.append(status)
+
+    # Build summary
+    summary = {
+        "total": len(results),
+        "in_sync": sum(1 for r in results if r["status"] == "IN_SYNC"),
+        "drift": sum(1 for r in results if r["status"] == "DRIFT"),
+        "unmanaged": sum(1 for r in results if r["status"] == "UNMANAGED"),
+        "unreachable": sum(1 for r in results if r["status"] == "UNREACHABLE"),
+    }
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "summary": summary,
+            "devices": results,
+        }, indent=2)
+    )]
+
+
+async def handle_config_snapshot(
+    name: Optional[str],
+    device_ids: Optional[list[str]]
+) -> list[TextContent]:
+    """Create a snapshot of current desired configurations."""
+    store = get_config_store()
+
+    try:
+        snapshot_name = store.create_snapshot(name=name, device_ids=device_ids)
+
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_snapshot",
+                "success": True,
+                "snapshot_name": snapshot_name,
+                "snapshot_path": str(store.snapshots_dir / snapshot_name),
+            }, indent=2)
+        )]
+
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_snapshot",
+                "success": False,
+                "error": str(e),
+            }, indent=2)
+        )]
+
+
+async def handle_config_restore(
+    name: str,
+    device_ids: Optional[list[str]]
+) -> list[TextContent]:
+    """Restore desired configurations from a snapshot."""
+    store = get_config_store()
+
+    try:
+        restored = store.restore_snapshot(name=name, device_ids=device_ids)
+
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_restore",
+                "success": True,
+                "snapshot_name": name,
+                "restored_devices": restored,
+                "hint": "Use config_status to see differences, then apply_config to sync devices",
+            }, indent=2)
+        )]
+
+    except ValueError as e:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_restore",
+                "success": False,
+                "error": str(e),
+                "available_snapshots": store.list_snapshots(),
+            }, indent=2)
+        )]
+
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_restore",
+                "success": False,
+                "error": str(e),
+            }, indent=2)
+        )]
+
+
+async def handle_config_history(
+    device_id: Optional[str],
+    limit: int
+) -> list[TextContent]:
+    """Get version history for device configurations."""
+    store = get_config_store()
+
+    history = store.get_config_history(device_id=device_id, limit=limit)
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "action": "config_history",
+            "device_id": device_id or "all",
+            "commit_count": len(history),
+            "commits": history,
+            "hint": "Use config_rollback with a revision to restore a previous version",
+        }, indent=2)
+    )]
+
+
+async def handle_config_rollback(
+    device_id: str,
+    revision: str
+) -> list[TextContent]:
+    """Rollback a device config to a previous version."""
+    store = get_config_store()
+
+    try:
+        restored = store.restore_config_from_revision(
+            device_id=device_id,
+            revision=revision,
+        )
+
+        if restored is None:
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "action": "config_rollback",
+                    "success": False,
+                    "error": f"Could not find config for {device_id} at revision {revision}",
+                }, indent=2)
+            )]
+
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_rollback",
+                "success": True,
+                "device_id": device_id,
+                "revision": revision,
+                "new_version": restored.version,
+                "hint": "Use config_status to verify, then apply_config to sync device",
+            }, indent=2)
+        )]
+
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "action": "config_rollback",
+                "success": False,
+                "error": str(e),
+            }, indent=2)
+        )]
+
+
+async def handle_config_diff_versions(
+    device_id: str,
+    revision1: str,
+    revision2: str
+) -> list[TextContent]:
+    """Show diff between two config versions."""
+    store = get_config_store()
+
+    diff_output = store.diff_config_revisions(
+        device_id=device_id,
+        revision1=revision1,
+        revision2=revision2,
+    )
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "action": "config_diff",
+            "device_id": device_id,
+            "revision1": revision1,
+            "revision2": revision2,
+            "diff": diff_output if diff_output else "(no differences)",
+        }, indent=2)
     )]
 
 
