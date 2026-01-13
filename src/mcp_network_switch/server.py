@@ -37,6 +37,7 @@ from pydantic import AnyUrl
 
 from .config.inventory import DeviceInventory
 from .config.schema import normalize_config, diff_configs, NetworkConfig
+from .config_engine import ConfigEngine
 from .devices.base import VLANConfig, PortConfig
 from .utils.logging_config import setup_logging, timed_section
 from .utils.audit_log import ChangeTracker, setup_audit_logging, get_recent_changes
@@ -421,6 +422,43 @@ async def list_tools() -> list[Tool]:
                 "required": []
             }
         ),
+        Tool(
+            name="apply_config",
+            description="""Apply a desired state configuration to a device. This is the recommended way to make changes - send the desired end state and the engine handles validation, diffing, and execution.
+
+Example config:
+{
+  "device": "brocade-core",
+  "vlans": {
+    "100": {
+      "name": "Production",
+      "untagged_ports": ["1/1/1", "1/1/2", "1/2/1", "1/2/2"]
+    }
+  }
+}
+
+Supports port ranges like "1/1/1-4" which expands to ["1/1/1", "1/1/2", "1/1/3", "1/1/4"].
+Use dry_run=true to preview changes without applying.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "config": {
+                        "type": "object",
+                        "description": "Desired state configuration with device, vlans, ports"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying (default: false)",
+                        "default": False
+                    },
+                    "audit_context": {
+                        "type": "string",
+                        "description": "Description for audit log (e.g., 'Add production VLAN')"
+                    }
+                },
+                "required": ["config"]
+            }
+        ),
     ]
 
 
@@ -526,6 +564,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments.get("device_id"),
                     arguments.get("operation"),
                     arguments.get("limit", 20)
+                )
+
+            elif name == "apply_config":
+                return await handle_apply_config(
+                    inv,
+                    arguments["config"],
+                    arguments.get("dry_run", False),
+                    arguments.get("audit_context", "")
                 )
 
             else:
@@ -1230,6 +1276,69 @@ async def handle_get_audit_log(
             },
             "records": formatted_records,
         }, indent=2)
+    )]
+
+
+async def handle_apply_config(
+    inv: DeviceInventory,
+    config: dict,
+    dry_run: bool,
+    audit_context: str
+) -> list[TextContent]:
+    """
+    Apply a desired state configuration to a device.
+
+    This is the primary tool for making changes. It:
+    1. Validates the config for errors
+    2. Calculates diff against current state
+    3. Generates optimized command batches
+    4. Executes with automatic error recovery
+    5. Returns detailed results
+
+    Use dry_run=True to preview changes without applying.
+    """
+    # Create config engine
+    engine = ConfigEngine(inv)
+
+    # Apply config (or dry-run)
+    result = await engine.apply_config(
+        config=config,
+        dry_run=dry_run,
+        audit_context=audit_context,
+    )
+
+    # Build response
+    response = {
+        "success": result.success,
+        "dry_run": result.dry_run,
+        "changes_made": result.changes_made,
+    }
+
+    if result.error:
+        response["error"] = result.error
+
+    if result.error_context:
+        response["error_context"] = result.error_context
+
+    if result.requires_ai_intervention:
+        response["requires_ai_intervention"] = True
+        response["message"] = (
+            "Auto-recovery failed. Please review the error context and "
+            "either fix the issue manually or provide more specific instructions."
+        )
+
+    if result.recovery_attempts:
+        response["warnings"] = result.recovery_attempts
+
+    if result.rollback_performed:
+        response["rollback_performed"] = True
+
+    if not result.dry_run and result.commands_executed:
+        response["commands_executed"] = len(result.commands_executed)
+
+    return [TextContent(
+        type="text",
+        text=json.dumps(response, indent=2)
     )]
 
 
