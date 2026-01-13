@@ -84,9 +84,8 @@ class ConfigExecutor:
                 # Execute main commands as batch (faster)
                 if plan.main_commands:
                     logger.info(f"Executing {len(plan.main_commands)} main commands")
-                    success, output = await device.execute_config_batch(
-                        plan.main_commands,
-                        stop_on_error=options.stop_on_error
+                    success, output = await device.execute_config_mode(
+                        plan.main_commands
                     )
                     result.commands_executed.extend(plan.main_commands)
 
@@ -196,9 +195,8 @@ class ConfigExecutor:
             return
 
         try:
-            success, output = await device.execute_config_batch(
-                plan.rollback_commands,
-                stop_on_error=False  # Try all rollback commands
+            success, output = await device.execute_config_mode(
+                plan.rollback_commands
             )
 
             if success:
