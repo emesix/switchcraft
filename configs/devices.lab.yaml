@@ -1,0 +1,36 @@
+# Switchcraft HIL (Hardware-in-the-Loop) Lab Device Inventory
+#
+# These are the ONLY devices permitted for HIL testing.
+# All devices are on the 192.168.254.x management network.
+#
+# SAFETY: HIL mode restricts operations to VLAN 999 only.
+
+devices:
+  lab-brocade:
+    name: "Brocade FCX624-E Core Switch"
+    host: 192.168.254.2
+    type: brocade
+    protocol: telnet
+    port: 23
+    username: admin
+    enable_password_required: true
+    timeout: 45
+    retries: 5
+
+  lab-zyxel:
+    name: "Zyxel GS1900-24HP Frontend PoE"
+    host: 192.168.254.3
+    type: zyxel-cli
+    protocol: ssh
+    port: 22
+    username: admin
+    timeout: 30
+
+  lab-openwrt:
+    name: "ONTI-1 S508CL-8S Backend 10G (OpenWrt)"
+    host: 192.168.254.4
+    type: openwrt
+    protocol: ssh
+    port: 22
+    username: root
+    timeout: 30

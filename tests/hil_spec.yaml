@@ -1,0 +1,69 @@
+# HIL (Hardware-in-the-Loop) Test Specification
+#
+# This file defines the ONLY permitted VLAN and ports for HIL testing.
+# These constraints are ENFORCED at runtime - violations are rejected.
+#
+# VLAN 999 is chosen because:
+# - High range (900-999) is compatible with older hardware
+# - Unlikely to conflict with production VLANs
+# - Single VLAN simplifies testing and auditing
+
+# The ONE and ONLY VLAN permitted in HIL mode
+vlan_id: 999
+vlan_name: "HIL-TEST-999"
+
+# Per-device port allocations for testing
+# These ports should be:
+# - Unused in production
+# - Not connected to critical infrastructure
+# - Safe to toggle VLAN membership
+devices:
+  lab-brocade:
+    host: 192.168.254.2
+    # Brocade uses unit/module/port format
+    access_port: "1/1/23"    # 1G copper port 23
+    trunk_port: "1/1/24"     # 1G copper port 24
+    # These are the last two copper ports, typically unused
+
+  lab-zyxel:
+    host: 192.168.254.3
+    # Zyxel uses simple port numbers
+    access_port: "23"
+    trunk_port: "24"
+    # Last two ports on the 24-port switch
+
+  lab-openwrt:
+    host: 192.168.254.4
+    # OpenWrt DSA uses lanX naming
+    access_port: "lan7"
+    trunk_port: "lan8"
+    # Last two ports on the 8-port switch
+
+# Test lifecycle stages (all must pass for HIL success)
+stages:
+  - snapshot    # Save pre-test state
+  - apply       # Create VLAN 999 and configure ports
+  - verify      # Assert expected state
+  - idempotent  # Apply again, verify no changes
+  - cleanup     # Restore original state
+  - validate    # Verify cleanup succeeded
+
+# Safety constraints (enforced at runtime)
+constraints:
+  # Only VLAN 999 operations permitted
+  allowed_vlans: [999]
+
+  # No changes to these critical VLANs
+  protected_vlans: [1, 254]
+
+  # No spanning-tree changes
+  allow_stp_changes: false
+
+  # No LACP/LAG changes
+  allow_lag_changes: false
+
+  # No routing changes
+  allow_routing_changes: false
+
+  # Maximum ports touched per device
+  max_ports_per_device: 2

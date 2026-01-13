@@ -1,0 +1,2 @@
+# Ignore HIL test artifacts (generated at runtime)
+hil/
