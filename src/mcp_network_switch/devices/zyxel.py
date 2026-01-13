@@ -348,8 +348,14 @@ class ZyxelDevice(NetworkDevice):
         return ports
 
     async def create_vlan(self, vlan: VLANConfig) -> tuple[bool, str]:
-        """Create a VLAN via web interface."""
+        """Create a VLAN via web interface.
+
+        This is a two-step process:
+        1. Create the VLAN with a name
+        2. Set port membership for tagged and untagged ports
+        """
         try:
+            # Step 1: Create the VLAN
             xssid = await self._get_xssid(self.CMD_VLAN_ADD)
             if not self._http:
                 raise ConnectionError("HTTP session not established")
@@ -368,9 +374,46 @@ class ZyxelDevice(NetworkDevice):
                 data=form_data,
             )
 
-            if resp.status_code == 200:
-                return True, f"Created VLAN {vlan.id}"
-            return False, f"Failed: HTTP {resp.status_code}"
+            if resp.status_code != 200:
+                return False, f"Failed to create VLAN: HTTP {resp.status_code}"
+
+            # Step 2: Set port membership for untagged ports
+            errors = []
+            for port in vlan.untagged_ports:
+                try:
+                    port_idx = int(port) - 1  # Ports are 1-indexed, API is 0-indexed
+                    if port_idx < 0 or port_idx > 25:
+                        errors.append(f"Port {port} untagged: Invalid port number")
+                        continue
+                except ValueError:
+                    errors.append(f"Port {port} untagged: Not a valid port number")
+                    continue
+                success, msg = await self._set_port_vlan_membership(
+                    port, port_idx, vlan.id, self.MEMBERSHIP_UNTAGGED
+                )
+                if not success:
+                    errors.append(f"Port {port} untagged: {msg}")
+
+            # Step 3: Set port membership for tagged ports
+            for port in vlan.tagged_ports:
+                try:
+                    port_idx = int(port) - 1  # Ports are 1-indexed, API is 0-indexed
+                    if port_idx < 0 or port_idx > 25:
+                        errors.append(f"Port {port} tagged: Invalid port number")
+                        continue
+                except ValueError:
+                    errors.append(f"Port {port} tagged: Not a valid port number")
+                    continue
+                success, msg = await self._set_port_vlan_membership(
+                    port, port_idx, vlan.id, self.MEMBERSHIP_TAGGED
+                )
+                if not success:
+                    errors.append(f"Port {port} tagged: {msg}")
+
+            if errors:
+                return False, f"Created VLAN {vlan.id} but port assignment failed: {'; '.join(errors)}"
+
+            return True, f"Created VLAN {vlan.id}"
 
         except Exception as e:
             return False, str(e)

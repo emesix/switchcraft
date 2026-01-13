@@ -305,13 +305,23 @@ class OpenWrtDevice(NetworkDevice):
         tagged = []
         untagged = []
 
-        # Parse ports: "lan1:t lan2 lan3:t" -> tagged=[lan1,lan3], untagged=[lan2]
+        # Parse ports: "lan1:t lan2 lan3:t lan4:u*" -> tagged=[lan1,lan3], untagged=[lan2,lan4]
+        # UCI port suffixes:
+        #   :t  = tagged
+        #   :u  = untagged (explicit)
+        #   :u* = untagged with PVID
+        #   *   = PVID only
+        #   (none) = untagged
         ports_str = d.get("ports", "")
         for port_spec in ports_str.split():
             if ":t" in port_spec:
-                tagged.append(port_spec.replace(":t", ""))
+                # Tagged port - strip :t suffix
+                port_name = port_spec.split(":")[0]
+                tagged.append(port_name)
             elif port_spec:
-                untagged.append(port_spec)
+                # Untagged port - strip any :u, :u*, * suffixes
+                port_name = port_spec.split(":")[0].rstrip("*")
+                untagged.append(port_name)
 
         return VLANConfig(
             id=vlan_id,
