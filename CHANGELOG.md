@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.2.0] - 2026-01-13
+
+### Configuration Management System
+
+#### Git-Versioned Desired State
+- New `ConfigStore` class for YAML-based configuration storage
+- Git integration with automatic commits on config changes
+- Drift detection comparing desired vs actual device state
+- Snapshot and restore functionality
+- Version history with rollback support
+
+#### New MCP Tools
+- `config_save` - Save desired state to git-versioned store
+- `config_status` - Check drift between desired and actual
+- `config_snapshot` - Create named snapshot
+- `config_restore` - Restore from snapshot
+- `config_history` - View git commit history
+- `config_rollback` - Rollback to previous version
+- `config_diff` - Diff between revisions
+
+### Zyxel SSH CLI Handler
+
+#### New Device Type: `zyxel-cli`
+- SSH CLI interface for Zyxel GS1900 switches (alternative to HTTPS API)
+- Legacy SSH algorithm support for OpenSSH 6.2 compatibility
+- Interactive shell with `--More--` pagination handling
+- Smart error detection that ignores interface statistics
+- Full VLAN and port management via CLI commands
+
+### HIL (Hardware-in-the-Loop) Testing
+
+#### Server-Enforced Safety
+- Only VLAN 999 operations permitted in HIL mode
+- Device allowlist: 192.168.254.2, .3, .4 only
+- Port restrictions per device (23/24 or lan7/8)
+- `HILConstraintError` raised on any violation
+
+#### Full Lifecycle Testing
+- 6-stage lifecycle: Snapshot → Apply → Verify → Idempotent → Cleanup → Validate
+- Per-device pass/fail with detailed stage results
+- JSON artifacts for audit: pre.json, post.json, clean.json, hil-report.json
+
+#### New Files
+- `src/mcp_network_switch/hil/` - HIL module (mode, constraints, runner, cli)
+- `configs/devices.lab.yaml` - Lab device inventory
+- `tests/hil_spec.yaml` - HIL test specification
+- `docs/HIL-TESTING.md` - Full HIL documentation with ralph-loop instructions
+
+### Build System
+
+#### Makefile Added
+- `make test` - Run unit tests
+- `make lint` - Run ruff linter
+- `make hil` - Run HIL tests on all devices
+- `make hil-brocade/zyxel/openwrt` - Run HIL on single device
+- `make hil-report` - View last HIL report
+- `make server` - Start MCP server
+
+### Enterprise Features (from 0.1.2)
+- Dry-run mode for `create_vlan` and `delete_vlan`
+- Audit logging with `get_audit_log` tool
+- Input validation for VLAN IDs and port names
+- Integration tests for multi-device workflows
+
+### Quality
+- 133 unit tests passing
+- All lint checks passing (ruff)
+
+---
+
 ## [0.1.1] - 2026-01-12
 
 ### Testing & Refinement Pass (Ralph Wiggum Iteration 1)

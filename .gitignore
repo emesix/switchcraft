@@ -22,10 +22,16 @@ build/
 *.swp
 *.swo
 
+# Claude Code
+.claude/
+
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Linting
+.ruff_cache/
 
 # Temporary files
 *.log
@@ -34,3 +40,6 @@ htmlcov/
 
 # Config with secrets (use .env instead)
 configs/secrets.yaml
+
+# HIL test artifacts (keep structure, ignore results)
+artifacts/hil/
