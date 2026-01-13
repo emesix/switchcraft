@@ -27,6 +27,27 @@
 - Enabled by default in `config_sync` tool
 - Can be disabled via `rollback_on_error=false` parameter
 
+### Fleet Management
+
+#### Device Groups
+- Define groups in `devices.yaml` for managing multiple devices as a unit
+- Groups can contain mixed device types
+- Validation warns about invalid device references
+
+#### Configuration Profiles
+- Reusable configuration templates in `~/.switchcraft/configs/profiles/`
+- Profiles support metadata: description, compatible device types
+- Type-based compatibility checking when applying profiles
+
+#### New MCP Tools
+- `list_groups` - List all device groups
+- `list_profiles` - List available configuration profiles
+- `save_profile` - Create a reusable profile
+- `config_sync_group` - Apply profile to all devices in a group
+  - Two-stage operation: apply profile as desired state, then optionally sync
+  - Dry-run support for previewing changes across entire fleet
+  - Per-device error handling with optional stop-on-first-error
+
 ### Zyxel SSH CLI Handler
 
 #### New Device Type: `zyxel-cli`
@@ -72,7 +93,7 @@
 - Integration tests for multi-device workflows
 
 ### Quality
-- 152 unit tests passing
+- 160 unit tests passing
 - All lint checks passing (ruff)
 
 ---

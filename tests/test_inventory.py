@@ -111,6 +111,134 @@ devices:
         assert onti_config["use_scp_workflow"] is True
 
 
+class TestDeviceGroups:
+    """Tests for device group functionality."""
+
+    @pytest.fixture
+    def temp_config_with_groups(self):
+        """Create a config file with groups."""
+        config_content = """
+defaults:
+  password_env: "TEST_PASSWORD"
+  timeout: 30
+
+devices:
+  switch-1:
+    type: brocade
+    host: 192.168.1.1
+    protocol: telnet
+    port: 23
+    username: admin
+
+  switch-2:
+    type: brocade
+    host: 192.168.1.2
+    protocol: telnet
+    port: 23
+    username: admin
+
+  ap-1:
+    type: openwrt
+    host: 192.168.1.10
+    protocol: ssh
+    port: 22
+    username: root
+
+  ap-2:
+    type: openwrt
+    host: 192.168.1.11
+    protocol: ssh
+    port: 22
+    username: root
+
+groups:
+  switches:
+    - switch-1
+    - switch-2
+  access-points:
+    - ap-1
+    - ap-2
+  all-network:
+    - switch-1
+    - switch-2
+    - ap-1
+    - ap-2
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(config_content)
+            f.flush()
+            yield f.name
+        os.unlink(f.name)
+
+    def test_get_groups(self, temp_config_with_groups):
+        """Can list all groups."""
+        inv = DeviceInventory(temp_config_with_groups)
+        groups = inv.get_groups()
+        assert "switches" in groups
+        assert "access-points" in groups
+        assert "all-network" in groups
+
+    def test_get_group_names(self, temp_config_with_groups):
+        """Can get list of group names."""
+        inv = DeviceInventory(temp_config_with_groups)
+        names = inv.get_group_names()
+        assert len(names) == 3
+        assert "switches" in names
+
+    def test_get_group_members(self, temp_config_with_groups):
+        """Can get members of a group."""
+        inv = DeviceInventory(temp_config_with_groups)
+        members = inv.get_group_members("switches")
+        assert len(members) == 2
+        assert "switch-1" in members
+        assert "switch-2" in members
+
+    def test_get_group_members_unknown(self, temp_config_with_groups):
+        """Unknown group raises KeyError."""
+        inv = DeviceInventory(temp_config_with_groups)
+        with pytest.raises(KeyError):
+            inv.get_group_members("nonexistent")
+
+    def test_get_group_info(self, temp_config_with_groups):
+        """Can get detailed group info."""
+        inv = DeviceInventory(temp_config_with_groups)
+        info = inv.get_group_info("switches")
+        assert info["name"] == "switches"
+        assert info["member_count"] == 2
+        assert "brocade" in info["device_types"]
+
+    def test_is_device_in_group(self, temp_config_with_groups):
+        """Can check group membership."""
+        inv = DeviceInventory(temp_config_with_groups)
+        assert inv.is_device_in_group("switch-1", "switches")
+        assert not inv.is_device_in_group("ap-1", "switches")
+        assert inv.is_device_in_group("ap-1", "access-points")
+
+    def test_get_device_groups(self, temp_config_with_groups):
+        """Can get all groups a device belongs to."""
+        inv = DeviceInventory(temp_config_with_groups)
+        groups = inv.get_device_groups("switch-1")
+        assert "switches" in groups
+        assert "all-network" in groups
+        assert "access-points" not in groups
+
+    def test_no_groups_defined(self):
+        """Gracefully handles configs with no groups."""
+        config_content = """
+devices:
+  test-switch:
+    type: brocade
+    host: 192.168.1.1
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(config_content)
+            f.flush()
+            inv = DeviceInventory(f.name)
+        os.unlink(f.name)
+        assert inv.get_groups() == {}
+        assert inv.get_group_names() == []
+
+
 class TestDeviceInventoryNoConfig:
     """Tests for DeviceInventory when no config file exists."""
 

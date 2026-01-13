@@ -658,11 +658,92 @@ class ConfigStore:
 
         return yaml.safe_load(profile_path.read_text())
 
-    def save_profile(self, name: str, config: dict) -> None:
-        """Save a profile."""
+    def save_profile(
+        self,
+        name: str,
+        config: dict,
+        description: Optional[str] = None,
+        device_types: Optional[list[str]] = None,
+    ) -> None:
+        """Save a profile with optional metadata.
+
+        Args:
+            name: Profile name (becomes filename)
+            config: Configuration dict (vlans, ports, settings)
+            description: Human-readable description
+            device_types: List of compatible device types (e.g., ["openwrt", "brocade"])
+        """
+        profile_data = {}
+
+        # Add metadata header if provided
+        if description:
+            profile_data["_description"] = description
+        if device_types:
+            profile_data["_device_types"] = device_types
+
+        # Add config
+        profile_data.update(config)
+
         profile_path = self.profiles_dir / f"{name}.yaml"
-        profile_path.write_text(yaml.dump(config, default_flow_style=False))
+        profile_path.write_text(yaml.dump(profile_data, default_flow_style=False))
         logger.info(f"Saved profile '{name}'")
+
+    def get_profile_info(self, name: str) -> Optional[dict]:
+        """Get profile metadata and summary.
+
+        Returns dict with:
+            - name: Profile name
+            - description: Human-readable description
+            - device_types: Compatible device types
+            - vlan_count: Number of VLANs defined
+            - has_ports: Whether port config is included
+        """
+        profile = self.get_profile(name)
+        if profile is None:
+            return None
+
+        return {
+            "name": name,
+            "description": profile.get("_description", ""),
+            "device_types": profile.get("_device_types", []),
+            "vlan_count": len(profile.get("vlans", {})),
+            "has_ports": bool(profile.get("ports")),
+            "has_settings": bool(profile.get("settings")),
+        }
+
+    def apply_profile_to_device(
+        self,
+        profile_name: str,
+        device_id: str,
+        updated_by: Optional[str] = None,
+    ) -> Optional[StoredConfig]:
+        """Apply a profile as the desired config for a device.
+
+        This copies the profile configuration to the device's desired state,
+        stripping profile metadata.
+
+        Args:
+            profile_name: Name of profile to apply
+            device_id: Target device ID
+            updated_by: User/system making the change
+
+        Returns:
+            StoredConfig if successful, None if profile not found
+        """
+        profile = self.get_profile(profile_name)
+        if profile is None:
+            return None
+
+        # Strip metadata keys (start with _)
+        config = {k: v for k, v in profile.items() if not k.startswith("_")}
+
+        return self.save_desired_config(
+            device_id=device_id,
+            config=config,
+            source="profile",
+            updated_by=updated_by,
+            commit_message=f"[{device_id}] Applied profile '{profile_name}'",
+        )
 
     # === Network-Wide Config ===
 

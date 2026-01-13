@@ -143,6 +143,14 @@ Add to `~/.config/claude-code/settings.json`:
 | `config_rollback` | Rollback to previous version |
 | `config_diff` | Diff between revisions |
 
+### Fleet Management
+| Tool | Description |
+|------|-------------|
+| `list_groups` | List device groups defined in inventory |
+| `list_profiles` | List available configuration profiles |
+| `save_profile` | Create a reusable configuration profile |
+| `config_sync_group` | Apply profile to all devices in a group |
+
 ### Audit
 | Tool | Description |
 |------|-------------|
@@ -152,7 +160,7 @@ Add to `~/.config/claude-code/settings.json`:
 
 ```bash
 make help           # Show all targets
-make test           # Run unit tests (152 tests)
+make test           # Run unit tests (160 tests)
 make lint           # Run ruff linter
 make server         # Start MCP server
 

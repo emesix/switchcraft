@@ -694,6 +694,163 @@ Use dry_run=true first to verify planned changes.""",
                 "required": ["device_id"]
             }
         ),
+        # === Fleet Management Tools ===
+        Tool(
+            name="list_groups",
+            description="""List all device groups defined in the inventory.
+
+Groups allow managing multiple devices as a unit. Define groups in devices.yaml:
+
+```yaml
+groups:
+  access-points:
+    - ap-living-room
+    - ap-bedroom
+    - ap-office
+```
+
+Use groups with config_sync_group to apply profiles to multiple devices.""",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="list_profiles",
+            description="""List available configuration profiles.
+
+Profiles are reusable configuration templates stored in
+~/.switchcraft/configs/profiles/. Apply profiles to devices or groups
+using config_sync_group.
+
+Example profile (ap-standard.yaml):
+```yaml
+_description: "Standard AP configuration"
+_device_types: ["openwrt"]
+vlans:
+  100:
+    name: "IoT"
+    untagged_ports: ["lan1", "lan2"]
+```""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "detailed": {
+                        "type": "boolean",
+                        "description": "Include profile metadata and summaries",
+                        "default": False
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="save_profile",
+            description="""Save a configuration profile for reuse across devices.
+
+Profiles are templates that can be applied to multiple devices. They're stored
+in ~/.switchcraft/configs/profiles/ and can be applied with config_sync_group.
+
+Example:
+```json
+{
+  "name": "ap-standard",
+  "description": "Standard AP configuration for home network",
+  "device_types": ["openwrt"],
+  "config": {
+    "vlans": {
+      "100": {"name": "IoT", "untagged_ports": ["lan1", "lan2"]},
+      "200": {"name": "Guest", "untagged_ports": ["lan3", "lan4"]}
+    }
+  }
+}
+```""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Profile name (used as filename)"
+                    },
+                    "config": {
+                        "type": "object",
+                        "description": "Configuration (vlans, ports, settings)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Human-readable description"
+                    },
+                    "device_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Compatible device types (e.g., ['openwrt', 'brocade'])"
+                    }
+                },
+                "required": ["name", "config"]
+            }
+        ),
+        Tool(
+            name="config_sync_group",
+            description="""Apply a configuration profile to all devices in a group.
+
+This is the primary tool for fleet management. It:
+1. Loads the profile from ~/.switchcraft/configs/profiles/
+2. For each device in the group:
+   - Sets the profile as the desired state
+   - Optionally syncs to the device (applies changes)
+
+Workflow:
+1. Create a profile with save_profile
+2. Define a group in devices.yaml
+3. Apply with config_sync_group
+
+Example:
+```json
+{
+  "group": "access-points",
+  "profile": "ap-standard",
+  "sync_devices": true,
+  "dry_run": true
+}
+```
+
+Use dry_run=true first to preview changes on all devices.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "group": {
+                        "type": "string",
+                        "description": "Device group name"
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "Profile name to apply"
+                    },
+                    "sync_devices": {
+                        "type": "boolean",
+                        "description": "Also sync to devices (default: false, just sets desired state)",
+                        "default": False
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying (when sync_devices=true)",
+                        "default": False
+                    },
+                    "rollback_on_error": {
+                        "type": "boolean",
+                        "description": "Auto-rollback failed devices (default: true)",
+                        "default": True
+                    },
+                    "stop_on_first_error": {
+                        "type": "boolean",
+                        "description": "Stop on first device failure (default: false)",
+                        "default": False
+                    }
+                },
+                "required": ["group", "profile"]
+            }
+        ),
     ]
 
 
@@ -861,6 +1018,34 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments.get("dry_run", False),
                     arguments.get("rollback_on_error", True),
                     arguments.get("audit_context", "")
+                )
+
+            # === Fleet Management ===
+            elif name == "list_groups":
+                return await handle_list_groups(inv)
+
+            elif name == "list_profiles":
+                return await handle_list_profiles(
+                    arguments.get("detailed", False)
+                )
+
+            elif name == "save_profile":
+                return await handle_save_profile(
+                    arguments["name"],
+                    arguments["config"],
+                    arguments.get("description"),
+                    arguments.get("device_types")
+                )
+
+            elif name == "config_sync_group":
+                return await handle_config_sync_group(
+                    inv,
+                    arguments["group"],
+                    arguments["profile"],
+                    arguments.get("sync_devices", False),
+                    arguments.get("dry_run", False),
+                    arguments.get("rollback_on_error", True),
+                    arguments.get("stop_on_first_error", False)
                 )
 
             else:
@@ -2065,6 +2250,256 @@ async def handle_config_sync(
     return [TextContent(
         type="text",
         text=json.dumps(response, indent=2)
+    )]
+
+
+# === FLEET MANAGEMENT HANDLERS ===
+
+async def handle_list_groups(inv: DeviceInventory) -> list[TextContent]:
+    """List all device groups."""
+    groups = inv.get_groups()
+
+    if not groups:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "groups": [],
+                "hint": "Define groups in devices.yaml under 'groups:' section"
+            }, indent=2)
+        )]
+
+    result = []
+    for group_name in groups:
+        info = inv.get_group_info(group_name)
+        result.append(info)
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "groups": result,
+            "total": len(result)
+        }, indent=2)
+    )]
+
+
+async def handle_list_profiles(detailed: bool) -> list[TextContent]:
+    """List available configuration profiles."""
+    store = get_config_store()
+    profile_names = store.list_profiles()
+
+    if not profile_names:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "profiles": [],
+                "hint": "Create profiles with save_profile or manually in "
+                        "~/.switchcraft/configs/profiles/"
+            }, indent=2)
+        )]
+
+    if detailed:
+        profiles = []
+        for name in profile_names:
+            info = store.get_profile_info(name)
+            if info:
+                profiles.append(info)
+    else:
+        profiles = profile_names
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "profiles": profiles,
+            "total": len(profiles)
+        }, indent=2)
+    )]
+
+
+async def handle_save_profile(
+    name: str,
+    config: dict,
+    description: Optional[str],
+    device_types: Optional[list[str]]
+) -> list[TextContent]:
+    """Save a configuration profile."""
+    store = get_config_store()
+
+    store.save_profile(
+        name=name,
+        config=config,
+        description=description,
+        device_types=device_types,
+    )
+
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "action": "save_profile",
+            "name": name,
+            "success": True,
+            "path": str(store.profiles_dir / f"{name}.yaml")
+        }, indent=2)
+    )]
+
+
+async def handle_config_sync_group(
+    inv: DeviceInventory,
+    group: str,
+    profile: str,
+    sync_devices: bool,
+    dry_run: bool,
+    rollback_on_error: bool,
+    stop_on_first_error: bool
+) -> list[TextContent]:
+    """Apply a profile to all devices in a group."""
+    store = get_config_store()
+
+    # Validate group exists
+    try:
+        device_ids = inv.get_group_members(group)
+    except KeyError:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "success": False,
+                "error": f"Unknown group: {group}",
+                "available_groups": inv.get_group_names()
+            }, indent=2)
+        )]
+
+    # Validate profile exists
+    profile_config = store.get_profile(profile)
+    if profile_config is None:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "success": False,
+                "error": f"Unknown profile: {profile}",
+                "available_profiles": store.list_profiles()
+            }, indent=2)
+        )]
+
+    # Check device type compatibility (if profile specifies types)
+    compatible_types = profile_config.get("_device_types", [])
+
+    results = {
+        "action": "config_sync_group",
+        "group": group,
+        "profile": profile,
+        "sync_devices": sync_devices,
+        "dry_run": dry_run,
+        "devices": {},
+        "summary": {
+            "total": len(device_ids),
+            "profile_applied": 0,
+            "synced": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
+    }
+
+    # Process each device
+    for device_id in device_ids:
+        device_result = {"device_id": device_id, "stages": []}
+
+        try:
+            # Check device type compatibility
+            device_config = inv.get_device_config(device_id)
+            device_type = device_config.get("type", "unknown")
+
+            if compatible_types and device_type not in compatible_types:
+                device_result["status"] = "skipped"
+                device_result["reason"] = (
+                    f"Device type '{device_type}' not in profile's "
+                    f"compatible types: {compatible_types}"
+                )
+                results["devices"][device_id] = device_result
+                results["summary"]["skipped"] += 1
+                continue
+
+            # Stage 1: Apply profile as desired config
+            stored = store.apply_profile_to_device(
+                profile_name=profile,
+                device_id=device_id,
+                updated_by="config_sync_group",
+            )
+
+            if stored:
+                device_result["stages"].append({
+                    "stage": "apply_profile",
+                    "success": True,
+                    "version": stored.version
+                })
+                results["summary"]["profile_applied"] += 1
+            else:
+                device_result["stages"].append({
+                    "stage": "apply_profile",
+                    "success": False,
+                    "error": "Failed to apply profile"
+                })
+                device_result["status"] = "failed"
+                results["devices"][device_id] = device_result
+                results["summary"]["failed"] += 1
+
+                if stop_on_first_error:
+                    break
+                continue
+
+            # Stage 2: Optionally sync to device
+            if sync_devices:
+                # Build config for apply
+                config = {
+                    "device": device_id,
+                    **stored.config
+                }
+
+                engine = ConfigEngine(inv)
+                sync_result = await engine.apply_config(
+                    config=config,
+                    dry_run=dry_run,
+                    audit_context=f"config_sync_group: {group}/{profile}",
+                    rollback_on_error=rollback_on_error,
+                )
+
+                device_result["stages"].append({
+                    "stage": "sync_device",
+                    "success": sync_result.success,
+                    "dry_run": sync_result.dry_run,
+                    "changes": sync_result.changes_made,
+                    "error": sync_result.error,
+                    "rollback_performed": sync_result.rollback_performed,
+                })
+
+                if sync_result.success:
+                    results["summary"]["synced"] += 1
+                    device_result["status"] = "success"
+                else:
+                    results["summary"]["failed"] += 1
+                    device_result["status"] = "sync_failed"
+
+                    if stop_on_first_error:
+                        results["devices"][device_id] = device_result
+                        break
+            else:
+                device_result["status"] = "profile_applied"
+
+        except Exception as e:
+            device_result["status"] = "error"
+            device_result["error"] = str(e)
+            results["summary"]["failed"] += 1
+
+            if stop_on_first_error:
+                results["devices"][device_id] = device_result
+                break
+
+        results["devices"][device_id] = device_result
+
+    # Overall success
+    results["success"] = results["summary"]["failed"] == 0
+
+    return [TextContent(
+        type="text",
+        text=json.dumps(results, indent=2)
     )]
 
 

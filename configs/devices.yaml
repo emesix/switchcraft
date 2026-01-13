@@ -49,6 +49,20 @@ devices:
     username: root
     timeout: 30
 
+# Device groups for fleet management
+# Use with config_sync_group to apply profiles to multiple devices
+groups:
+  switches:
+    - brocade-core
+    - zyxel-frontend
+  openwrt-devices:
+    - onti-backend
+  # Example for access points (add your APs here):
+  # access-points:
+  #   - ap-living-room
+  #   - ap-bedroom
+  #   - ap-office
+
 # SNMP communities for monitoring integration
 snmp:
   communities:

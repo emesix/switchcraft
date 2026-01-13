@@ -146,6 +146,12 @@ python -m mcp_network_switch.server
 - `config_snapshot` / `config_restore` - Snapshot management
 - `config_history` / `config_rollback` / `config_diff` - Version control
 
+### Fleet Management
+- `list_groups` - List device groups (defined in devices.yaml)
+- `list_profiles` - List configuration profiles
+- `save_profile` - Create reusable config template
+- `config_sync_group` - Apply profile to all devices in a group
+
 ### Audit
 - `get_audit_log` - View recent configuration changes
 
