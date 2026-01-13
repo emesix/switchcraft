@@ -14,11 +14,18 @@
 #### New MCP Tools
 - `config_save` - Save desired state to git-versioned store
 - `config_status` - Check drift between desired and actual
+- `config_sync` - Apply desired state to device with auto-rollback
 - `config_snapshot` - Create named snapshot
 - `config_restore` - Restore from snapshot
 - `config_history` - View git commit history
 - `config_rollback` - Rollback to previous version
 - `config_diff` - Diff between revisions
+
+#### Automatic Rollback
+- ConfigEngine now supports automatic rollback on failure (Brocade)
+- Rollback commands generated from diff (reverse changes)
+- Enabled by default in `config_sync` tool
+- Can be disabled via `rollback_on_error=false` parameter
 
 ### Zyxel SSH CLI Handler
 
@@ -65,7 +72,7 @@
 - Integration tests for multi-device workflows
 
 ### Quality
-- 133 unit tests passing
+- 152 unit tests passing
 - All lint checks passing (ruff)
 
 ---

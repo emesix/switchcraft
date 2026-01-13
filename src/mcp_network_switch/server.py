@@ -651,6 +651,49 @@ Useful for reviewing what changed between versions.""",
                 "required": ["device_id"]
             }
         ),
+        Tool(
+            name="config_sync",
+            description="""Sync device configuration to match the desired state.
+
+Reads the desired state from ~/.switchcraft/configs/desired/ and applies it
+to the device. This is the recommended way to push configuration changes:
+
+1. config_save (or manually edit desired/*.yaml) to set desired state
+2. config_status to preview drift
+3. config_sync to apply changes
+
+Features:
+- Automatic diff calculation (only changes what's needed)
+- Dry-run mode to preview without applying
+- Automatic rollback on failure (Brocade only)
+- Audit logging of all changes
+
+Use dry_run=true first to verify planned changes.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device ID to sync"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Preview changes without applying (default: false)",
+                        "default": False
+                    },
+                    "rollback_on_error": {
+                        "type": "boolean",
+                        "description": "Auto-rollback on failure (default: true, Brocade only)",
+                        "default": True
+                    },
+                    "audit_context": {
+                        "type": "string",
+                        "description": "Description for audit log"
+                    }
+                },
+                "required": ["device_id"]
+            }
+        ),
     ]
 
 
@@ -809,6 +852,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     arguments["device_id"],
                     arguments.get("revision1", "HEAD~1"),
                     arguments.get("revision2", "HEAD")
+                )
+
+            elif name == "config_sync":
+                return await handle_config_sync(
+                    inv,
+                    arguments["device_id"],
+                    arguments.get("dry_run", False),
+                    arguments.get("rollback_on_error", True),
+                    arguments.get("audit_context", "")
                 )
 
             else:
@@ -1928,6 +1980,91 @@ async def handle_config_diff_versions(
             "revision2": revision2,
             "diff": diff_output if diff_output else "(no differences)",
         }, indent=2)
+    )]
+
+
+async def handle_config_sync(
+    inv: DeviceInventory,
+    device_id: str,
+    dry_run: bool,
+    rollback_on_error: bool,
+    audit_context: str
+) -> list[TextContent]:
+    """
+    Sync device configuration to match the desired state from ConfigStore.
+
+    Reads the desired state from ~/.switchcraft/configs/desired/{device_id}.yaml
+    and applies it to the device using the ConfigEngine.
+    """
+    store = get_config_store()
+
+    # Get desired config from store
+    stored = store.get_desired_config(device_id)
+    if stored is None:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "success": False,
+                "error": f"No desired config found for {device_id}",
+                "hint": "Use config_save to capture current state as desired, "
+                        "or manually create ~/.switchcraft/configs/desired/{device_id}.yaml"
+            }, indent=2)
+        )]
+
+    # Build config dict for apply_config (add device_id)
+    config = {
+        "device": device_id,
+        **stored.config
+    }
+
+    # Create config engine
+    engine = ConfigEngine(inv)
+
+    # Apply config with rollback support
+    result = await engine.apply_config(
+        config=config,
+        dry_run=dry_run,
+        audit_context=audit_context or f"config_sync for {device_id}",
+        rollback_on_error=rollback_on_error,
+    )
+
+    # Build response
+    response = {
+        "action": "config_sync",
+        "device_id": device_id,
+        "success": result.success,
+        "dry_run": result.dry_run,
+        "changes_made": result.changes_made,
+        "desired_version": stored.version,
+        "desired_checksum": stored.checksum,
+    }
+
+    if result.error:
+        response["error"] = result.error
+
+    if result.error_context:
+        response["error_context"] = result.error_context
+
+    if result.requires_ai_intervention:
+        response["requires_ai_intervention"] = True
+        response["message"] = (
+            "Auto-recovery failed. Please review the error context and "
+            "either fix the issue manually or provide more specific instructions."
+        )
+
+    if result.recovery_attempts:
+        response["warnings"] = result.recovery_attempts
+
+    if result.rollback_performed:
+        response["rollback_performed"] = True
+        response["message"] = "Changes were rolled back due to failure"
+
+    if not result.dry_run and result.commands_executed:
+        response["commands_executed"] = len(result.commands_executed)
+
+    return [TextContent(
+        type="text",
+        text=json.dumps(response, indent=2)
     )]
 
 

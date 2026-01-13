@@ -68,17 +68,35 @@ class OpenWrtDevice(NetworkDevice):
                     key, _, value = line.partition("=")
                     self._system_info[key.strip()] = value.strip("'\"")
 
-        # Detect available ports
+        # Detect available ports (DSA ports like lan1, lan2, etc.)
         success, output = await self.execute("ls -1 /sys/class/net/ | grep -E '^lan[0-9]+$'")
         if success:
-            self._system_info["ports"] = output.strip().split("\n")
+            self._system_info["ports"] = [p for p in output.strip().split("\n") if p]
         else:
             self._system_info["ports"] = []
 
-        # Detect bridge name
-        success, output = await self.execute("uci get network.switch.name 2>/dev/null || echo 'br-lan'")
+        # Detect bridge name - look for actual bridge device
+        success, output = await self.execute(
+            "uci -q get network.switch.type 2>/dev/null && echo 'switch' || "
+            "ls /sys/class/net/br-lan/bridge 2>/dev/null && echo 'br-lan' || "
+            "echo 'switch'"
+        )
         if success:
-            self._system_info["bridge"] = output.strip()
+            lines = output.strip().split("\n")
+            self._system_info["bridge"] = lines[-1] if lines else "switch"
+
+        # Check if bridge supports VLAN filtering
+        bridge = self._system_info.get("bridge", "switch")
+        success, output = await self.execute(
+            f"cat /sys/class/net/{bridge}/bridge/vlan_filtering 2>/dev/null || echo '-1'"
+        )
+        if success:
+            try:
+                self._system_info["vlan_filtering"] = int(output.strip())
+            except ValueError:
+                self._system_info["vlan_filtering"] = -1  # Not a bridge
+        else:
+            self._system_info["vlan_filtering"] = -1
 
     async def disconnect(self) -> None:
         """Disconnect from OpenWrt device."""
@@ -363,48 +381,85 @@ class OpenWrtDevice(NetworkDevice):
     async def create_vlan(self, vlan: VLANConfig) -> tuple[bool, str]:
         """Create a VLAN using bridge-vlan UCI configuration.
 
-        This creates a bridge-vlan section that defines port membership.
+        OpenWrt DSA VLAN setup requires:
+        1. Bridge with vlan_filtering enabled
+        2. bridge-vlan sections in UCI for port membership
         """
+        if vlan.id < 1 or vlan.id > 4094:
+            return False, f"Invalid VLAN ID {vlan.id} - must be between 1 and 4094"
+
         bridge = self._system_info.get("bridge", "switch")
+        vlan_filtering = self._system_info.get("vlan_filtering", -1)
         section_name = f"vlan{vlan.id}"
 
-        commands = [
+        commands = []
+
+        # Step 1: Enable VLAN filtering on bridge if not already enabled
+        if vlan_filtering == 0:
+            logger.info(f"Enabling VLAN filtering on bridge {bridge}")
+            commands.extend([
+                f"uci set network.{bridge}.vlan_filtering='1'",
+            ])
+
+        # Step 2: Create bridge-vlan section
+        commands.extend([
             f"uci set network.{section_name}=bridge-vlan",
             f"uci set network.{section_name}.device='{bridge}'",
             f"uci set network.{section_name}.vlan='{vlan.id}'",
-        ]
+        ])
 
-        # Build ports specification: "lan1:t lan2" (t = tagged)
+        # Step 3: Build ports specification: "lan1:t lan2" (t = tagged, * = pvid)
         ports_spec = []
         for port in vlan.tagged_ports:
             ports_spec.append(f"{port}:t")
         for port in vlan.untagged_ports:
-            ports_spec.append(port)
+            # Untagged ports get the VLAN as PVID
+            ports_spec.append(f"{port}:u*")
 
         if ports_spec:
             commands.append(f"uci set network.{section_name}.ports='{' '.join(ports_spec)}'")
+        else:
+            # No ports specified - just create the VLAN
+            commands.append(f"uci set network.{section_name}.ports=''")
 
         commands.append("uci commit network")
 
         success, output = await self.execute_config_mode(commands)
-        if success:
-            # Optionally reload network
-            await self.execute("/etc/init.d/network reload 2>/dev/null &")
-            return True, f"Created VLAN {vlan.id} on {bridge}"
-        return False, output
+        if not success:
+            return False, output
+
+        # Step 4: Apply changes - reload network
+        logger.info("Reloading network configuration...")
+        reload_success, reload_output = await self.execute(
+            "/etc/init.d/network reload 2>&1"
+        )
+
+        # Update cached vlan_filtering state
+        if vlan_filtering == 0:
+            self._system_info["vlan_filtering"] = 1
+
+        if reload_success:
+            return True, f"Created VLAN {vlan.id} on {bridge} with ports: {ports_spec}"
+        else:
+            return True, f"Created VLAN {vlan.id} (UCI committed, network reload pending: {reload_output})"
 
     async def delete_vlan(self, vlan_id: int) -> tuple[bool, str]:
         """Delete a VLAN."""
         if vlan_id == 1:
             return False, "Cannot delete default VLAN 1"
 
+        if vlan_id < 1 or vlan_id > 4094:
+            return False, f"Invalid VLAN ID {vlan_id}"
+
         section_name = f"vlan{vlan_id}"
 
-        # Check if VLAN exists
+        # Check if VLAN exists by common section name
         success, _ = await self.execute(f"uci get network.{section_name} 2>/dev/null")
         if not success:
-            # Try to find by searching
-            success, output = await self.execute(f"uci show network | grep \"\\.vlan='{vlan_id}'\"")
+            # Try to find by searching for the VLAN ID
+            success, output = await self.execute(
+                f"uci show network | grep -E \"\\.vlan='?{vlan_id}'?\" | head -1"
+            )
             if success and output:
                 match = re.match(r"network\.(\w+)\.vlan", output)
                 if match:
@@ -420,10 +475,18 @@ class OpenWrtDevice(NetworkDevice):
         ]
 
         success, output = await self.execute_config_mode(commands)
-        if success:
-            await self.execute("/etc/init.d/network reload 2>/dev/null &")
+        if not success:
+            return False, output
+
+        # Apply changes
+        reload_success, reload_output = await self.execute(
+            "/etc/init.d/network reload 2>&1"
+        )
+
+        if reload_success:
             return True, f"Deleted VLAN {vlan_id}"
-        return False, output
+        else:
+            return True, f"Deleted VLAN {vlan_id} (UCI committed, network reload pending)"
 
     async def configure_port(self, port: PortConfig) -> tuple[bool, str]:
         """Configure a port.

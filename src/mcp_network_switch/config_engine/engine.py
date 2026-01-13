@@ -60,6 +60,7 @@ class ConfigEngine:
         dry_run: bool = False,
         audit_context: str = "",
         user: Optional[str] = None,
+        rollback_on_error: bool = True,
     ) -> ExecuteResult:
         """
         Apply a desired state configuration to a device.
@@ -76,6 +77,7 @@ class ConfigEngine:
             dry_run: If True, preview changes without applying
             audit_context: Description for audit log
             user: User identifier for audit log
+            rollback_on_error: If True, attempt rollback on failure (Brocade only)
 
         Returns:
             ExecuteResult with success/failure and details
@@ -150,7 +152,7 @@ class ConfigEngine:
             audit_context=audit_context,
             user=user,
             stop_on_error=True,
-            rollback_on_error=False,  # MVP: no auto-rollback yet
+            rollback_on_error=rollback_on_error,
         )
 
         logger.info(f"{'DRY RUN: ' if dry_run else ''}Executing command plan")

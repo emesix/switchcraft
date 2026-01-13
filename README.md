@@ -136,6 +136,7 @@ Add to `~/.config/claude-code/settings.json`:
 |------|-------------|
 | `config_save` | Save desired state to git-versioned store |
 | `config_status` | Check drift between desired and actual |
+| `config_sync` | Apply desired state to device (with rollback) |
 | `config_snapshot` | Create named snapshot |
 | `config_restore` | Restore from snapshot |
 | `config_history` | View git commit history |
@@ -151,7 +152,7 @@ Add to `~/.config/claude-code/settings.json`:
 
 ```bash
 make help           # Show all targets
-make test           # Run unit tests (133 tests)
+make test           # Run unit tests (152 tests)
 make lint           # Run ruff linter
 make server         # Start MCP server
 
