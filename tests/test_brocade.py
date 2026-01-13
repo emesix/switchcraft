@@ -70,6 +70,29 @@ class TestBrocadePortParsing:
         assert "1/1/1 to 1/1/2" in result
         assert "1/2/1 to 1/2/2" in result
 
+    def test_format_port_ranges_by_module_single_module(self, device):
+        """Single module returns single entry."""
+        result = device._format_port_ranges_by_module(["1/1/1", "1/1/2", "1/1/3"])
+        assert result == ["1/1/1 to 1/1/3"]
+
+    def test_format_port_ranges_by_module_two_modules(self, device):
+        """Two modules return two separate entries."""
+        result = device._format_port_ranges_by_module(["1/1/1", "1/1/2", "1/2/1", "1/2/2"])
+        assert len(result) == 2
+        assert "1/1/1 to 1/1/2" in result
+        assert "1/2/1 to 1/2/2" in result
+
+    def test_format_port_ranges_by_module_empty(self, device):
+        """Empty list returns empty list."""
+        result = device._format_port_ranges_by_module([])
+        assert result == []
+
+    def test_format_port_ranges_by_module_preserves_order(self, device):
+        """Module 1 comes before module 2 in output."""
+        result = device._format_port_ranges_by_module(["1/2/1", "1/1/1"])
+        assert result[0] == "1/1/1 to 1/1/1"
+        assert result[1] == "1/2/1 to 1/2/1"
+
     def test_format_port_range_empty(self, device):
         """Format empty port list."""
         result = device._format_port_range([])

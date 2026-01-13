@@ -24,6 +24,7 @@ import logging
 import re
 import socket
 import time
+from collections import defaultdict
 from typing import Optional
 
 from .base import NetworkDevice, DeviceConfig, DeviceStatus, VLANConfig, PortConfig
@@ -658,15 +659,15 @@ class BrocadeDevice(NetworkDevice):
             f"vlan {vlan.id} name {vlan_name} by port",
         ]
 
-        # Add untagged ports - can use range syntax
+        # Add untagged ports - separate command per module (Brocade limitation)
         if vlan.untagged_ports:
-            port_spec = self._format_port_range(vlan.untagged_ports)
-            commands.append(f"untagged ethe {port_spec}")
+            for port_spec in self._format_port_ranges_by_module(vlan.untagged_ports):
+                commands.append(f"untagged ethe {port_spec}")
 
-        # Add tagged ports
+        # Add tagged ports - separate command per module
         if vlan.tagged_ports:
-            port_spec = self._format_port_range(vlan.tagged_ports)
-            commands.append(f"tagged ethe {port_spec}")
+            for port_spec in self._format_port_ranges_by_module(vlan.tagged_ports):
+                commands.append(f"tagged ethe {port_spec}")
 
         # Add L3 interface if IP configured
         if vlan.ip_address and vlan.ip_mask:
@@ -676,19 +677,19 @@ class BrocadeDevice(NetworkDevice):
 
         return await self.execute_config_mode(commands)
 
-    def _format_port_range(self, ports: list[str]) -> str:
-        """Format ports for Brocade command.
+    def _format_port_ranges_by_module(self, ports: list[str]) -> list[str]:
+        """Format ports grouped by module for Brocade commands.
 
-        Input: ["1/1/1", "1/1/2", "1/1/3", "1/1/4"]
-        Output: "1/1/1 to 1/1/4" (if contiguous)
+        Brocade cannot accept port ranges spanning different modules in a single
+        command. This method returns a list of port specs, one per module.
 
-        Input: ["1/1/1", "1/1/3", "1/1/5"]
-        Output: "1/1/1 to 1/1/1 1/1/3 to 1/1/3 1/1/5 to 1/1/5" (individual)
+        Input: ["1/1/1", "1/1/2", "1/2/1", "1/2/2"]
+        Output: ["1/1/1 to 1/1/2", "1/2/1 to 1/2/2"]
 
-        Brocade requires "ethe X/Y/Z to X/Y/W" syntax for port ranges.
+        Each output string should be used in a separate command.
         """
         if not ports:
-            return ""
+            return []
 
         # Parse ports into (unit, module, port) tuples
         parsed = []
@@ -704,31 +705,49 @@ class BrocadeDevice(NetworkDevice):
         # Sort by unit, module, port
         parsed.sort(key=lambda x: (x[0], x[1], x[2]))
 
-        # Group contiguous ranges within same unit/module
-        ranges = []
-        i = 0
-        while i < len(parsed):
-            unit, module, port_num, port_str = parsed[i]
-            start = port_str
-            end = port_str
+        # Group by (unit, module)
+        module_groups: dict[tuple[int, int], list[tuple[int, str]]] = defaultdict(list)
+        for unit, module, port_num, port_str in parsed:
+            module_groups[(unit, module)].append((port_num, port_str))
 
-            # Find contiguous ports in same unit/module
-            j = i + 1
-            while j < len(parsed):
-                next_unit, next_module, next_port, next_str = parsed[j]
-                prev_unit, prev_module, prev_port, _ = parsed[j - 1]
+        # Build ranges per module
+        result = []
+        for (unit, module), port_list in sorted(module_groups.items()):
+            ranges = []
+            i = 0
+            while i < len(port_list):
+                port_num, port_str = port_list[i]
+                start = port_str
+                end = port_str
 
-                if (next_unit == prev_unit and
-                    next_module == prev_module and
-                    next_port == prev_port + 1):
-                    end = next_str
-                    j += 1
-                else:
-                    break
+                # Find contiguous ports
+                j = i + 1
+                while j < len(port_list):
+                    next_num, next_str = port_list[j]
+                    prev_num, _ = port_list[j - 1]
+                    if next_num == prev_num + 1:
+                        end = next_str
+                        j += 1
+                    else:
+                        break
 
-            ranges.append(f"{start} to {end}")
-            i = j
+                ranges.append(f"{start} to {end}")
+                i = j
 
+            result.append(" ".join(ranges))
+
+        return result
+
+    def _format_port_range(self, ports: list[str]) -> str:
+        """Format ports for Brocade command (single string, for same-module ports).
+
+        Input: ["1/1/1", "1/1/2", "1/1/3", "1/1/4"]
+        Output: "1/1/1 to 1/1/4" (if contiguous)
+
+        WARNING: This joins all ranges with space. For cross-module ports,
+        use _format_port_ranges_by_module() instead to get separate commands.
+        """
+        ranges = self._format_port_ranges_by_module(ports)
         return " ".join(ranges)
 
     async def delete_vlan(self, vlan_id: int) -> tuple[bool, str]:
