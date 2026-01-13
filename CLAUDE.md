@@ -74,7 +74,14 @@ regular Ethernet frames between modules. This is required for the OpenWrt link!
   - Tagged: 1/2/1
   - Router interface: VE 254
 
-### Recent Changes (2026-01-12)
+### Recent Changes (2026-01-13)
+1. Added `config_sync` tool for applying desired state to devices with auto-rollback
+2. Enabled automatic rollback on failure (Brocade only)
+3. Fixed OpenWrt VLAN handler for DSA bridge-vlan with vlan_filtering
+4. Added HIL (Hardware-in-the-Loop) testing system with server-enforced safety
+5. Added Zyxel SSH CLI handler (`zyxel-cli` device type)
+
+### Previous Changes (2026-01-12)
 1. Added `execute_batch()` to Brocade handler for fast multi-command execution
 2. Added `execute_config_batch` MCP tool for batch config commands
 3. Changed port 1/2/2 from tagged to untagged in VLAN 254 (for ONTI connectivity)
@@ -100,7 +107,9 @@ python -m mcp_network_switch.server
 - Port naming: `lan1`, `lan2`, ..., `lan8`
 - Configuration via UCI (Unified Configuration Interface)
 - VLANs via bridge-vlan sections in `/etc/config/network`
+- **VLAN filtering must be enabled** on the bridge before bridge-vlan works
 - Port status from `/sys/class/net/lanX/{operstate,speed,duplex}`
+- Handler auto-enables vlan_filtering when creating VLANs
 
 ## Known Issues
 - Device at .3: SSH responds (OpenSSH 6.2) but NETWORK_PASSWORD rejected - credentials unknown
@@ -109,13 +118,36 @@ python -m mcp_network_switch.server
 - **10G to 1G bridging fixed**: Required `stack disable` on Brocade (2026-01-12)
 
 ## MCP Tools Available
+
+### Device Management
 - `list_devices` - List all configured devices
 - `device_status` - Health check
+
+### Configuration Reading
+- `get_config` - Get normalized config (VLANs, ports)
 - `get_vlans` / `get_ports` - Read config
+
+### Configuration Writing
+- `create_vlan` / `delete_vlan` - VLAN management (supports dry_run)
+- `configure_port` - Port configuration
+- `save_config` - Write memory
+- `apply_config` - Apply desired state config dict directly
+
+### Batch Operations
 - `execute_command` - Raw command execution
 - `execute_batch` - Fast batch show commands (Brocade, 3-5x faster)
 - `execute_config_batch` - Fast batch config commands (Brocade, 3x faster)
-- `create_vlan` / `delete_vlan` - VLAN management
-- `configure_port` - Port configuration
-- `save_config` - Write memory
-- `download_config_file` / `upload_config_file` - ONTI SCP workflow (legacy, device now runs OpenWrt)
+- `batch_command` - Run command on multiple devices
+
+### Configuration Management (Git-Versioned)
+- `config_save` - Save current device state as desired config
+- `config_status` - Check drift between desired and actual
+- `config_sync` - Apply desired state to device (with auto-rollback)
+- `config_snapshot` / `config_restore` - Snapshot management
+- `config_history` / `config_rollback` / `config_diff` - Version control
+
+### Audit
+- `get_audit_log` - View recent configuration changes
+
+### Legacy (ONTI)
+- `download_config_file` / `upload_config_file` - SCP workflow (device now runs OpenWrt)
