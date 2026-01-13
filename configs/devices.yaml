@@ -23,28 +23,22 @@ devices:
     retries: 5
 
   zyxel-frontend:
-    type: openwrt
+    type: zyxel
     name: "Zyxel GS1900-24HP Frontend PoE"
     host: 192.168.254.3
-    protocol: ssh
-    port: 22
+    protocol: https
+    port: 443
     username: admin
-    # Updated: Now running BusyBox firmware with SSH access
     timeout: 30
 
   onti-backend:
-    type: onti
+    type: openwrt
     name: "ONTI-1 S508CL-8S Backend 10G"
     host: 192.168.254.4
     protocol: ssh
     port: 22
     username: root
-    # ONTI supports SCP-based config workflow
-    use_scp_workflow: true
-    config_paths:
-      network: /etc/config/network
-      system: /etc/config/system
-      firewall: /etc/config/firewall
+    timeout: 30
 
 # SNMP communities for monitoring integration
 snmp:
