@@ -2,6 +2,7 @@
 from .base import NetworkDevice, DeviceConfig
 from .brocade import BrocadeDevice
 from .onti import ONTIDevice
+from .onti_ogf import OntiOGFDevice
 from .openwrt import OpenWrtDevice
 from .zyxel import ZyxelDevice
 from .zyxel_cli import ZyxelCLIDevice
@@ -11,6 +12,7 @@ __all__ = [
     "DeviceConfig",
     "BrocadeDevice",
     "ONTIDevice",
+    "OntiOGFDevice",
     "OpenWrtDevice",
     "ZyxelDevice",
     "ZyxelCLIDevice",
@@ -20,6 +22,7 @@ __all__ = [
 DEVICE_TYPES = {
     "brocade": BrocadeDevice,
     "onti": ONTIDevice,
+    "onti-ogf": OntiOGFDevice,
     "openwrt": OpenWrtDevice,
     "zyxel": ZyxelDevice,
     "zyxel-cli": ZyxelCLIDevice,

@@ -49,6 +49,16 @@ devices:
     username: root
     timeout: 30
 
+  onti-ogf:
+    type: onti-ogf
+    name: "ONTI-2 S508CL Original Firmware"
+    host: 192.168.254.5
+    protocol: telnet
+    port: 23
+    username: admin
+    password: admin
+    timeout: 30
+
 # Device groups for fleet management
 # Use with config_sync_group to apply profiles to multiple devices
 groups:
