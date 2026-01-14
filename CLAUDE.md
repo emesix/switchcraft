@@ -13,6 +13,8 @@ MCP server for managing L2/L3 network switches with unified API across different
     │                    │
     │                    └── 1/2/2 (10G SFP+) ──► [ONTI S508CL + OpenWrt: 192.168.254.4] ◄── Backend 10G (SSH:22)
     │
+    ├── [ONTI S508CL Original FW: 192.168.254.5] ◄── Telnet:23 (admin/admin)
+    │
     └── [Unknown device: 192.168.254.3] ◄── SSH:22 (was Zyxel, now shows OpenSSH 6.2)
 ```
 
@@ -22,12 +24,14 @@ MCP server for managing L2/L3 network switches with unified API across different
 | .2 | Brocade FCX624-E | FastIron 08.0.30u | 24x1G + 4x10G SFP+ | ✅ Reachable |
 | .3 | Unknown (was Zyxel) | OpenSSH 6.2 | ? | ⚠️ Auth failed |
 | .4 | ONTI S508CL (RTL930x) | OpenWrt SNAPSHOT r32466 | 8x LAN (lan1-lan8) | ✅ Reachable |
+| .5 | ONTI S508CL (RTL930x) | V300SP10250704 (OGF) | 8x SFP+ (Ethernet1/0/1-8) | ✅ Reachable |
 | .99 | iZombie | Arch Linux | 1x 1G | ✅ Reachable |
 
 ## Device Credentials
 - Password: Use `NETWORK_PASSWORD` env var (in `.env`)
 - Brocade: admin user, enable password required
 - OpenWrt (.4): root user, SSH with password auth
+- ONTI OGF (.5): admin/admin (hardcoded), Telnet with login auth
 - Zyxel (if present): admin user, HTTPS API
 
 ## Logging Configuration
@@ -74,7 +78,11 @@ regular Ethernet frames between modules. This is required for the OpenWrt link!
   - Tagged: 1/2/1
   - Router interface: VE 254
 
-### Recent Changes (2026-01-13)
+### Recent Changes (2026-01-14)
+1. Added ONTI Original Firmware handler (`onti-ogf` device type) for stock firmware switches
+2. New device at .5 running V300SP10250704 firmware with Cisco-style CLI
+
+### Previous Changes (2026-01-13)
 1. Added `config_sync` tool for applying desired state to devices with auto-rollback
 2. Enabled automatic rollback on failure (Brocade only)
 3. Fixed OpenWrt VLAN handler for DSA bridge-vlan with vlan_filtering
@@ -110,6 +118,40 @@ python -m mcp_network_switch.server
 - **VLAN filtering must be enabled** on the bridge before bridge-vlan works
 - Port status from `/sys/class/net/lanX/{operstate,speed,duplex}`
 - Handler auto-enables vlan_filtering when creating VLANs
+
+### ONTI Original Firmware (onti-ogf)
+- Device type: `onti-ogf` - for ONTI S508CL with stock firmware (not OpenWrt)
+- Port naming: `Ethernet1/0/X` (X = 1-8 for 8-port model)
+- Hardware: RTL930x-based with 8x SFP+ ports (10G capable)
+- Protocol: Telnet on port 23 with login/password authentication
+- CLI style: Cisco-like with `Switch#` prompt
+- Config mode: `config` command, `Switch(config)#` prompt
+- Pagination: `terminal length 0` to disable --More--
+- Save config: `write` command
+
+**Key Commands:**
+```
+show version              # Device info, uptime, firmware
+show vlan                 # VLAN list with port membership
+show interface            # Detailed port statistics
+show running-config       # Current configuration
+show mac-address-table    # MAC address table
+config                    # Enter config mode
+write                     # Save running to startup
+```
+
+**VLAN Configuration:**
+```
+config
+vlan 100
+name MyVLAN
+exit
+interface ethernet 1/0/1
+switchport access vlan 100
+exit
+end
+write
+```
 
 ## Known Issues
 - Device at .3: SSH responds (OpenSSH 6.2) but NETWORK_PASSWORD rejected - credentials unknown
