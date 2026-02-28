@@ -14,8 +14,9 @@ Transport architecture:
 Boot sequence:
 1. Bootloader V0.2 prints "Loader start V0.2"
 2. Options: [v] SPI flash viewer, [ESC] firmware download
-3. Normal boot proceeds to "Key is wrong" auth prompt
-4. Web UI available after full boot (~15s)
+3. Normal boot proceeds to UART password prompt (password: Lx+2035&asp)
+4. After login: RTL8373: shell with regget/set, phyget/set, showip, etc.
+5. Web UI available after full boot (~15s)
 
 Config backup format:
 - Binary download from config_back.cgi?cmd=conf_backup
@@ -46,7 +47,11 @@ class JTComSerial:
     """
 
     BOOT_MARKER = "Loader start"
-    AUTH_PROMPT = "Key is wrong"
+    AUTH_PROMPT = "password below"
+    AUTH_PASSWORD = "Lx+2035&asp"
+    LOGIN_OK = "Login OK"
+    LOGIN_FAIL = "Key is wrong"
+    SHELL_PROMPT = "RTL8373:"
     SPI_PROMPT = "SPI>"
 
     def __init__(self, port: str = "/dev/ttyUSB0", baud: int = 57600, timeout: float = 2):
@@ -199,6 +204,40 @@ class JTComSerial:
 
         raise TimeoutError(f"Bootloader not detected within {reboot_timeout}s")
 
+    def login(self, timeout: float = 5) -> bool:
+        """Authenticate to the UART shell.
+
+        Sends the hardcoded password and checks for 'Login OK'.
+        Returns True if login succeeded.
+        """
+        self.drain()
+        self.write(self.AUTH_PASSWORD)
+        output = self.read_until(self.SHELL_PROMPT, timeout=timeout)
+        if self.LOGIN_OK in output:
+            logger.info("UART login successful")
+            return True
+        logger.warning(f"UART login failed: {output[:100]}")
+        return False
+
+    def shell_command(self, command: str, timeout: float = 5) -> str:
+        """Send a command to the RTL8373: shell and return the output.
+
+        Requires prior successful login().
+        """
+        self.drain()
+        self.write(command)
+        output = self.read_until(self.SHELL_PROMPT, timeout=timeout)
+        # Strip the echoed command and trailing prompt
+        lines = output.splitlines()
+        # Remove echo of our command (first line) and prompt (last line)
+        result_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped == command.strip() or stripped.startswith(self.SHELL_PROMPT):
+                continue
+            result_lines.append(line)
+        return "\n".join(result_lines).strip()
+
     def spi_read(self, address: int, length: int = 256) -> str:
         """Read from SPI flash using viewer 'r' command.
 
@@ -325,12 +364,12 @@ class JTComDevice(NetworkDevice):
     """JT-COM S207CW-91TS managed switch handler.
 
     Dual-transport device:
-    - Serial (UART) for boot interception, SPI flash access, diagnostics
+    - Serial (UART) for boot interception, SPI flash access, RTL8373 shell
     - HTTP (CGI) for configuration management (VLANs, ports, MACs)
 
-    The 8051-based firmware has no CLI shell — all management is via
-    the web CGI interface. Serial is only useful during boot or for
-    low-level flash operations.
+    UART shell (after login with Lx+2035&asp) provides:
+    showip, regset/get, physet/get, sdsset/get, gpioset/get,
+    i2cset/get, reboot, reset, fiber, vlan
     """
 
     # Port mapping: hardware ports 0-8, displayed as Port 1-9
@@ -443,8 +482,12 @@ class JTComDevice(NetworkDevice):
             elif cmd in ("show mac", "show mac-address-table"):
                 html = await web.get("mac.cgi")
                 return True, self._strip_html(html)
+            elif cmd.startswith(("regget", "regset", "phyget", "physet",
+                                   "sdsget", "sdsset", "gpioget", "gpioset",
+                                   "i2cget", "i2cset", "showip", "fiber", "vlan")):
+                return await self.serial_command(command.strip())
             else:
-                return False, f"Unknown command: {command} (8051 firmware has no CLI)"
+                return False, f"Unknown command: {command}"
         except Exception as e:
             return False, str(e)
 
@@ -719,6 +762,33 @@ class JTComDevice(NetworkDevice):
             return True, f"Serial connected: {self._serial.port}"
         except Exception as e:
             return False, f"Serial connection failed: {e}"
+
+    async def serial_login(self) -> tuple[bool, str]:
+        """Authenticate to the UART shell."""
+        loop = asyncio.get_event_loop()
+        try:
+            ok = await loop.run_in_executor(None, self._serial.login)
+            if ok:
+                return True, "UART login successful — RTL8373: shell ready"
+            return False, "UART login failed"
+        except Exception as e:
+            return False, f"UART login failed: {e}"
+
+    async def serial_command(self, command: str, timeout: float = 5) -> tuple[bool, str]:
+        """Send a command to the RTL8373 UART shell.
+
+        Requires prior serial_login(). Available commands:
+        showip, regget, regset, phyget, physet, sdsget, sdsset,
+        gpioget, gpioset, i2cget, i2cset, reboot, reset, fiber, vlan
+        """
+        loop = asyncio.get_event_loop()
+        try:
+            output = await loop.run_in_executor(
+                None, self._serial.shell_command, command, timeout
+            )
+            return True, output or "(no output)"
+        except Exception as e:
+            return False, str(e)
 
     async def serial_read(self, timeout: float = 2) -> tuple[bool, str]:
         """Read available serial output."""
