@@ -150,30 +150,54 @@ class JTComSerial:
 
         return drained
 
-    def enter_spi_viewer(self, reboot_timeout: float = 30) -> str:
+    def enter_spi_viewer(self, reboot_timeout: float = 60) -> str:
         """Intercept boot and send 'v' to enter SPI flash viewer.
 
         Must be called during device boot (reboot device first).
-        Watches for bootloader banner and sends 'v' key.
+        The bootloader window is extremely brief (~1s), so we spam 'v'
+        at 50ms intervals starting before the banner appears.
 
         Returns:
             SPI viewer banner output
         """
+        import threading
+
         logger.info("Waiting for bootloader to enter SPI viewer...")
         self.drain()
 
-        output = self.read_until(self.BOOT_MARKER, timeout=reboot_timeout)
-        if self.BOOT_MARKER not in output:
-            raise TimeoutError(f"Bootloader not detected within {reboot_timeout}s")
+        # Spam 'v' at 20Hz to catch the brief bootloader window
+        stop_spam = threading.Event()
 
-        # Send 'v' to enter SPI viewer
-        time.sleep(0.1)
-        self.write_raw(b"v")
-        logger.info("Sent 'v' to bootloader, entering SPI viewer")
+        def _spam_v():
+            ser = self._ensure_connected()
+            while not stop_spam.is_set():
+                ser.write(b"v")
+                ser.flush()
+                time.sleep(0.05)
 
-        # Wait for SPI prompt
-        spi_output = self.read_until(self.SPI_PROMPT, timeout=10)
-        return output + spi_output
+        spam_thread = threading.Thread(target=_spam_v, daemon=True)
+        spam_thread.start()
+
+        # Read until we see the SPI viewer banner or normal boot
+        output = ""
+        start = time.monotonic()
+        try:
+            while time.monotonic() - start < reboot_timeout:
+                chunk = self.read_available(timeout=0.2)
+                if chunk:
+                    output += chunk
+                    if self.SPI_PROMPT in output or "SPI FLASH VIEWER" in output:
+                        logger.info("SPI viewer mode entered successfully")
+                        return output
+                    if "RunTime Kernel Starting" in output:
+                        raise RuntimeError(
+                            "Missed bootloader window — device booted normally"
+                        )
+        finally:
+            stop_spam.set()
+            spam_thread.join(timeout=1)
+
+        raise TimeoutError(f"Bootloader not detected within {reboot_timeout}s")
 
     def spi_read(self, address: int, length: int = 256) -> str:
         """Read from SPI flash using viewer 'r' command.
@@ -210,15 +234,18 @@ class JTComWeb:
         """Create HTTP client and authenticate."""
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout),
-            follow_redirects=True,
+            follow_redirects=False,
+            headers={"Referer": f"{self.base_url}/"},
         )
         await self._authenticate()
 
     async def _authenticate(self) -> None:
-        """Authenticate using MD5 cookie scheme.
+        """Authenticate via login form POST + MD5 cookie.
 
-        The JT-COM web UI uses a cookie named after the username
-        with value = MD5(username + password).
+        The JT-COM web UI requires:
+        1. POST to /login.cgi with username, password, Response (MD5 hash)
+        2. Cookie set to admin=MD5(username+password)
+        3. Referer header on ALL subsequent requests (or CGI pages return 404)
         """
         if not self._client:
             raise ConnectionError("HTTP client not initialized")
@@ -228,8 +255,20 @@ class JTComWeb:
         ).hexdigest()
 
         self._client.cookies.set(self.username, md5_hash)
+
+        # POST login form to create server-side session
+        await self._client.post(
+            f"{self.base_url}/login.cgi",
+            data={
+                "username": self.username,
+                "password": self.password,
+                "Response": md5_hash,
+                "language": "EN",
+            },
+        )
+
         self._authenticated = True
-        logger.info(f"Web auth cookie set for {self.base_url}")
+        logger.info(f"Web session established for {self.base_url}")
 
     async def close(self) -> None:
         """Close HTTP client."""
