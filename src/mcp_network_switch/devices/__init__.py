@@ -1,6 +1,7 @@
 """Device handlers for different switch types."""
 from .base import NetworkDevice, DeviceConfig
 from .brocade import BrocadeDevice
+from .jtcom_serial import JTComDevice
 from .onti import ONTIDevice
 from .onti_ogf import OntiOGFDevice
 from .openwrt import OpenWrtDevice
@@ -11,6 +12,7 @@ __all__ = [
     "NetworkDevice",
     "DeviceConfig",
     "BrocadeDevice",
+    "JTComDevice",
     "ONTIDevice",
     "OntiOGFDevice",
     "OpenWrtDevice",
@@ -21,6 +23,7 @@ __all__ = [
 # Device type registry
 DEVICE_TYPES = {
     "brocade": BrocadeDevice,
+    "jtcom": JTComDevice,
     "onti": ONTIDevice,
     "onti-ogf": OntiOGFDevice,
     "openwrt": OpenWrtDevice,

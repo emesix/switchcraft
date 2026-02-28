@@ -59,6 +59,19 @@ devices:
     password: admin
     timeout: 30
 
+  jtcom-lab:
+    type: jtcom
+    name: "JT-COM S207CW-91TS 2.5G Switch"
+    host: 192.168.2.1
+    protocol: http
+    port: 80
+    username: admin
+    password: admin
+    timeout: 15
+    config_paths:
+      serial_port: "/dev/ttyUSB0"
+      serial_baud: "57600"
+
 # Device groups for fleet management
 # Use with config_sync_group to apply profiles to multiple devices
 groups:
