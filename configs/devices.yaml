@@ -30,27 +30,42 @@ devices:
     timeout: 30
 
   onti-backend:
-    type: openwrt
-    name: "ONTI-1 S508CL-8S Backend 10G"
-    host: 192.168.254.4
-    protocol: ssh
-    port: 22
-    username: root
+    type: onti-ogf
+    name: "ONTi-BE S508CL-8S Backend 10G"
+    host: 192.168.254.30
+    protocol: telnet
+    port: 23
+    username: admin
+    password: admin
     timeout: 30
 
   onti-frontend:
-    type: openwrt
-    name: "ONTI-2 S508CL-8S Frontend 10G"
-    host: 192.168.254.5
-    protocol: ssh
-    port: 22
-    username: root
+    type: onti-ogf
+    name: "ONTi-FE S508CL-8S Frontend 10G"
+    host: 192.168.254.31
+    protocol: telnet
+    port: 23
+    username: admin
+    password: admin
+    timeout: 30
+
+  # Lab/bench unit — stock firmware, same hardware as ONTI S508CL-8S
+  # Also sold as: Onti-S508-S8, SKS8300-8, HK-ES3058-8P-L (rebrands)
+  # Serial console: 192.168.0.50 (emesix) → /dev/ttyS0 @ 9600 8N1
+  # Socat TCP bridge: 192.168.0.50:2323 (for when not on 254.x subnet)
+  onti-bench:
+    type: onti-ogf
+    name: "ONTI S508CL-8S Bench (Stock FW)"
+    host: 192.168.0.50
+    protocol: telnet
+    port: 2323
+    username: admin
     timeout: 30
 
   91tsm:
     type: jtcom
     name: "ONT-S207CW-91TSM Frontend Copper Breakout"
-    host: 192.168.254.6
+    host: 192.168.254.32
     protocol: http
     port: 80
     username: admin
@@ -87,9 +102,10 @@ groups:
     - zyxel-frontend
     - 91tsm
     - 62tsse
-  openwrt-devices:
+  onti-stock:
     - onti-backend
     - onti-frontend
+    - onti-bench
   # Example for access points (add your APs here):
   # access-points:
   #   - ap-living-room

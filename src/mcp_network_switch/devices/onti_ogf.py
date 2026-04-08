@@ -1,24 +1,58 @@
 """ONTI S508CL Original Firmware switch handler via Telnet.
 
-The ONTI S508CL with original firmware (not OpenWrt) has a Cisco-style CLI
-accessible via telnet. This handler provides full management capabilities.
+The ONTI S508CL-8S with original/stock firmware has a Cisco-style CLI
+accessible via telnet (port 23) or serial console (9600 8N1). This handler
+provides full management capabilities via both transports.
+
+Also sold as: Onti-S508-S8, SKS8300-8, HK-ES3058-8P-L (rebrands of same hardware).
 
 Technical details:
-- Telnet on port 23 with login/password authentication
-- Cisco-style CLI with Switch# prompt
+- Telnet on port 23 or serial-over-TCP (socat bridge) for console access
+- Cisco-style CLI with configurable hostname prompt (default: "Switch#")
 - Port naming: Ethernet1/0/X (X = 1-8 for 8-port SFP+ model)
 - Hardware: RTL930x-based with 8x SFP+ ports (10G capable)
 - Default credentials: admin/admin
+- Serial console: 9600 baud, 8N1, no flow control
 
-Command Reference (V300SP10250704 firmware):
-- show version           : Device info, uptime, firmware
-- show vlan              : List all VLANs with port membership
-- show interface         : Detailed interface statistics
-- show running-config    : Current running configuration
-- show mac-address-table : MAC address table
-- terminal length 0      : Disable --More-- pagination
-- config                 : Enter configuration mode
-- write                  : Save running config to startup
+Exec Command Reference (V300SP10250704 firmware):
+- show version              : Device info, MAC, uptime, firmware, serial
+- show vlan                 : List all VLANs with port membership
+- show interface            : Detailed stats for ALL ports (verbose)
+- show interface EthernetX  : Stats for single port
+- show running-config       : Current running configuration
+- show startup-config       : Saved startup configuration
+- show mac-address-table    : MAC address table (VLAN, MAC, type, port)
+- show transceiver          : SFP module summary (temp, voltage, power)
+- show transceiver detail   : SFP module detailed diagnostics + thresholds
+- show ip route             : IP routing table
+- show spanning-tree        : STP status (global MSTP)
+- show lldp                 : LLDP status and settings
+- show clock                : Current system time
+- show users                : Active console/telnet/ssh sessions
+- terminal length 0         : Disable --More-- pagination
+- config                    : Enter configuration mode
+- write                     : Save running config (requires Y confirmation)
+- ping <ip>                 : ICMP ping
+- reload                    : Reboot switch
+
+Config Mode Commands:
+- vlan <id>                           : Create/enter VLAN context
+- name <name>                         : Set VLAN name (in vlan context)
+- no vlan <id>                        : Delete VLAN
+- interface ethernet <slot/port>      : Enter interface config
+- switchport access vlan <id>         : Set access VLAN
+- switchport mode trunk               : Set port to trunk mode
+- switchport mode access              : Set port to access mode
+- switchport trunk allowed vlan add   : Add VLAN to trunk
+- shutdown / no shutdown              : Admin disable/enable port
+- alias <name>                        : Set port description/alias
+- ip address <ip> <mask>              : Set management IP (on vlan interface)
+
+Commands that DO NOT work (firmware limitation):
+- show interface status/brief/counters : Use "show interface" instead
+- show vlan <id>                       : Use "show vlan" (all) instead
+- show cpu / show memory               : Not supported
+- no alias                             : Cannot clear alias via CLI
 
 Port naming: Ethernet1/0/1 to Ethernet1/0/8 for 8-port model
 """
@@ -35,9 +69,16 @@ from ..utils.logging_config import timed, perf_logger
 
 logger = logging.getLogger(__name__)
 
-# ONTI OGF prompt patterns
-PROMPT_PATTERN = re.compile(r"Switch[#>(\(config\))]+\s*$")
-CONFIG_PROMPT_PATTERN = re.compile(r"Switch\(config[^)]*\)#\s*$")
+# ONTI OGF prompt patterns — hostname may vary (e.g. "Switch", "NZ", custom)
+# Must NOT match syslog lines like "%Jul 04 05:01:23.456 ..."
+# Leading [\x00-\x1f]* strips control chars (e.g. \x1f unit separator) that
+# some firmware versions inject before the prompt after password echo.
+PROMPT_PATTERN = re.compile(
+    r"^[\x00-\x1f]*[A-Za-z][\w-]*(?:\(config[^)]*\))?[#>]\s*$", re.MULTILINE
+)
+CONFIG_PROMPT_PATTERN = re.compile(
+    r"^[\x00-\x1f]*[A-Za-z][\w-]*\(config[^)]*\)#\s*$", re.MULTILINE
+)
 MORE_PATTERN = re.compile(r"--More--", re.IGNORECASE)
 
 
@@ -52,7 +93,19 @@ class OntiOGFTelnet:
         self._buffer = b""
 
     async def connect(self, username: str, password: str) -> None:
-        """Establish telnet connection and authenticate."""
+        """Establish telnet connection and authenticate.
+
+        Works with both direct telnet (port 23) and serial-over-TCP bridges
+        (e.g. ser2net/socat). Handles unknown console state without wasting
+        login attempts on empty CR probes.
+
+        Strategy: send the username directly instead of a bare CR. This works
+        regardless of which prompt the console is at:
+        - At Username: → username accepted, proceeds to Password:
+        - At Switch#  → "admin" is an invalid command, but we detect the prompt
+        - At Password: → "admin" used as password, may succeed or fail gracefully
+        - Silent       → username wakes the console and gets processed
+        """
         loop = asyncio.get_event_loop()
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.settimeout(self.timeout)
@@ -60,27 +113,85 @@ class OntiOGFTelnet:
             None, self._socket.connect, (self.host, self.port)
         )
 
-        # Wait for login prompt
-        await asyncio.sleep(1)
-        login_output = await self._read_until_pattern(r"login:", timeout=10)
-        logger.debug(f"Login prompt received: {login_output[-50:]}")
-
-        # Send username
-        await self._send_raw(f"{username}\r\n".encode())
+        # Drain any buffered output from previous sessions.
+        # ser2net buffers serial data (e.g. syslog messages like %PORT-5-UPDOWN)
+        # between TCP connections. We must drain ALL of it before probing state.
         await asyncio.sleep(0.5)
+        buffered = ""
+        for _ in range(5):
+            chunk = (await self._read_available(timeout=1)).decode("ascii", errors="ignore")
+            if not chunk:
+                break
+            buffered += chunk
+        logger.debug(f"Drained buffer ({len(buffered)} chars): {buffered[-100:]!r}")
 
-        # Wait for password prompt
-        await self._read_until_pattern(r"[Pp]assword:", timeout=5)
+        # Already at CLI prompt — session persisted from previous connection
+        if PROMPT_PATTERN.search(buffered):
+            logger.info(f"Already authenticated to {self.host} (existing session)")
+            return
 
-        # Send password
-        await self._send_raw(f"{password}\r\n".encode())
-        await asyncio.sleep(1)
+        # If we see Username: in buffered output, go straight to login
+        if "Username" in buffered or "login" in buffered.lower():
+            return await self._do_login(username, password)
 
-        # Wait for Switch# prompt
-        output = await self._read_until_prompt(timeout=10)
-        if "Switch#" not in output and "Switch>" not in output:
+        # Send username directly (not a bare CR) to probe + advance state
+        await self._send_raw(f"{username}\r".encode())
+        await asyncio.sleep(2)
+        response = (await self._read_available(timeout=3)).decode("ascii", errors="ignore")
+        logger.debug(f"After username probe: {response[-100:]!r}")
+
+        # Case: we were at Switch# — username was treated as bad command
+        if PROMPT_PATTERN.search(response):
+            logger.info(f"Already authenticated to {self.host}")
+            return
+
+        # Case: we were at Username: — switch accepted it, now at Password:
+        if re.search(r"[Pp]assword:", response):
+            await self._send_raw(f"{password}\r".encode())
+            await asyncio.sleep(1)
+            output = await self._read_until_prompt(timeout=10)
+            if PROMPT_PATTERN.search(output):
+                logger.info(f"Successfully authenticated to {self.host}")
+                return
+            # Password failed — might be at Username: again
+            if "Username" in output or "login" in output.lower():
+                return await self._do_login(username, password)
             raise ConnectionError(f"Login failed, got: {output[-100:]}")
 
+        # Case: we were at Password: — "admin" was used as password
+        # If it succeeded, we'd see a prompt. If it failed, we see Username:
+        if "Username" in response or "login" in response.lower():
+            return await self._do_login(username, password)
+
+        # Fallback: wait for any recognizable prompt
+        response += await self._read_until_pattern(
+            r"(?:login|[Uu]sername|[Pp]assword):|[#>]\s*$", timeout=10
+        )
+
+        if PROMPT_PATTERN.search(response):
+            logger.info(f"Authenticated to {self.host}")
+            return
+        if "Username" in response or "login" in response.lower():
+            return await self._do_login(username, password)
+        if re.search(r"[Pp]assword:", response):
+            await self._send_raw(f"{password}\r".encode())
+            await asyncio.sleep(1)
+            output = await self._read_until_prompt(timeout=10)
+            if PROMPT_PATTERN.search(output):
+                logger.info(f"Authenticated to {self.host}")
+                return
+
+        raise ConnectionError(f"Cannot authenticate, got: {response[-100:]}")
+
+    async def _do_login(self, username: str, password: str) -> None:
+        """Perform username/password login from a clean Username: prompt."""
+        await self._send_raw(f"{username}\r".encode())
+        await self._read_until_pattern(r"[Pp]assword:", timeout=5)
+        await self._send_raw(f"{password}\r".encode())
+        await asyncio.sleep(1)
+        output = await self._read_until_prompt(timeout=10)
+        if not PROMPT_PATTERN.search(output):
+            raise ConnectionError(f"Login failed, got: {output[-100:]}")
         logger.info(f"Successfully authenticated to {self.host}")
 
     async def close(self) -> None:
@@ -163,7 +274,7 @@ class OntiOGFTelnet:
 
     async def send_command(self, command: str, timeout: float = 30) -> str:
         """Send a command and return the output."""
-        await self._send_raw(f"{command}\r\n".encode())
+        await self._send_raw(f"{command}\r".encode())
         await asyncio.sleep(0.5)
         output = await self._read_until_prompt(timeout=timeout)
 
@@ -180,14 +291,14 @@ class OntiOGFTelnet:
 
     async def enter_config_mode(self) -> bool:
         """Enter configuration mode."""
-        await self._send_raw(b"config\r\n")
+        await self._send_raw(b"config\r")
         await asyncio.sleep(0.5)
         output = await self._read_until_prompt(timeout=5)
         return "config" in output.lower() or CONFIG_PROMPT_PATTERN.search(output) is not None
 
     async def exit_config_mode(self) -> None:
         """Exit configuration mode."""
-        await self._send_raw(b"end\r\n")
+        await self._send_raw(b"end\r")
         await asyncio.sleep(0.3)
         await self._read_until_prompt(timeout=5)
 
@@ -202,8 +313,36 @@ class OntiOGFDevice(NetworkDevice):
     @with_retry(max_attempts=3, min_wait=2, max_wait=10)
     @timed("connect")
     async def connect(self) -> bool:
-        """Connect to ONTI OGF switch via telnet."""
+        """Connect to ONTI OGF switch via telnet.
+
+        Reuses an existing connection if still alive (critical for serial-over-
+        TCP bridges where reconnection is unreliable due to syslog noise and
+        login lockouts).
+        """
+        # Reuse existing connection if it's still alive
+        if self._telnet and self._connected:
+            try:
+                # Quick health check — send empty command to verify connection
+                await self._telnet._send_raw(b"\r")
+                await asyncio.sleep(0.3)
+                probe = (await self._telnet._read_available(timeout=1)).decode(
+                    "ascii", errors="ignore"
+                )
+                if PROMPT_PATTERN.search(probe):
+                    logger.info(f"Reusing existing connection to {self.device_id}")
+                    return True
+            except Exception:
+                logger.debug(f"Existing connection to {self.device_id} is dead")
+                await self._telnet.close()
+                self._telnet = None
+                self._connected = False
+
         logger.info(f"Connecting to ONTI-OGF {self.device_id} at {self.host}")
+
+        # Close any leftover connection from a previous failed attempt
+        if self._telnet:
+            await self._telnet.close()
+            self._telnet = None
 
         self._telnet = OntiOGFTelnet(
             self.host,
@@ -214,7 +353,12 @@ class OntiOGFDevice(NetworkDevice):
         username = self.config.username or "admin"
         password = self.config.get_password() or "admin"
 
-        await self._telnet.connect(username, password)
+        try:
+            await self._telnet.connect(username, password)
+        except Exception:
+            await self._telnet.close()
+            self._telnet = None
+            raise
 
         # Disable pagination
         await self._telnet.send_command("terminal length 0", timeout=5)
@@ -224,16 +368,16 @@ class OntiOGFDevice(NetworkDevice):
         return True
 
     async def disconnect(self) -> None:
-        """Disconnect from ONTI OGF switch."""
-        if self._telnet:
-            try:
-                await self._telnet.send_command("exit", timeout=2)
-            except Exception:
-                pass
-            await self._telnet.close()
-            self._telnet = None
-        self._connected = False
-        logger.info(f"Disconnected from {self.device_id}")
+        """Soft disconnect — keeps the connection alive for reuse.
+
+        Serial-over-TCP connections are kept persistent to avoid reconnection
+        issues (syslog noise, login lockouts). The connection is only truly
+        closed on error or when the MCP server shuts down.
+        """
+        # Intentionally do NOT close the connection — keep it for reuse.
+        # The device instance is cached by DeviceInventory, so the next
+        # MCP call will reuse it via connect()'s health check.
+        logger.debug(f"Soft disconnect from {self.device_id} (connection kept alive)")
 
     async def check_health(self) -> DeviceStatus:
         """Check device health."""
@@ -272,14 +416,14 @@ class OntiOGFDevice(NetworkDevice):
             return DeviceStatus(reachable=False, error=str(e))
 
     # Error patterns that indicate command failure
+    # Note: "% " prefixes error messages like "% Invalid input" and "% Incomplete command"
+    # but syslog messages like "%Jul 04..." and "%PORT-5-UPDOWN" should NOT match
     ERROR_PATTERNS = [
-        "Invalid input",
+        "% Invalid input",
+        "% Incomplete command",
+        "% Unknown command",
         "Error:",
-        "error:",
-        "Unknown command",
-        "Incomplete command",
-        "not found",
-        "% ",
+        "error!",
     ]
 
     def _has_error(self, output: str) -> Optional[str]:
@@ -359,42 +503,52 @@ class OntiOGFDevice(NetworkDevice):
     async def get_vlans(self) -> list[VLANConfig]:
         """Get all VLAN configurations.
 
-        Parses 'show vlan' output:
+        Parses 'show vlan' output (ports may span multiple lines):
         VLAN Name         Type       Media     Ports
         ---- ------------ ---------- --------- ----------------------------------------
         1    default      Static     ENET      Ethernet1/0/1       Ethernet1/0/2
+                                               Ethernet1/0/3       Ethernet1/0/4
         """
         success, output = await self.execute("show vlan")
         if not success:
             return []
 
         vlans = []
+        current_vlan = None
         lines = output.split("\n")
 
         for line in lines:
-            # Skip header lines
-            if line.startswith("VLAN") or line.startswith("----") or not line.strip():
+            stripped = line.strip()
+            # Skip header and empty lines
+            if stripped.startswith("VLAN") or stripped.startswith("----") or not stripped:
                 continue
 
-            # Parse VLAN line
-            # Format: "1    default      Static     ENET      Ethernet1/0/1 ..."
-            parts = line.split()
-            if len(parts) >= 4 and parts[0].isdigit():
+            parts = stripped.split()
+
+            # New VLAN entry: starts with a digit (VLAN ID)
+            if parts and parts[0].isdigit():
+                # Save previous VLAN
+                if current_vlan:
+                    vlans.append(current_vlan)
+
                 vlan_id = int(parts[0])
-                vlan_name = parts[1]
+                vlan_name = parts[1] if len(parts) > 1 else ""
 
-                # Extract ports (everything after ENET)
-                ports = []
-                for part in parts:
-                    if part.startswith("Ethernet"):
-                        ports.append(part)
-
-                vlans.append(VLANConfig(
+                ports = [p for p in parts if p.startswith("Ethernet")]
+                current_vlan = VLANConfig(
                     id=vlan_id,
                     name=vlan_name,
-                    untagged_ports=ports,  # Default assumption
+                    untagged_ports=ports,
                     tagged_ports=[],
-                ))
+                )
+            elif current_vlan:
+                # Continuation line — just port names
+                ports = [p for p in parts if p.startswith("Ethernet")]
+                current_vlan.untagged_ports.extend(ports)
+
+        # Don't forget the last VLAN
+        if current_vlan:
+            vlans.append(current_vlan)
 
         return vlans
 
@@ -551,6 +705,7 @@ class OntiOGFDevice(NetworkDevice):
         else:
             commands.append("no shutdown")
 
+        # Note: 'alias' can be set but NOT cleared ('no alias' is invalid)
         if port.description:
             commands.append(f"alias {port.description}")
 
@@ -561,5 +716,23 @@ class OntiOGFDevice(NetworkDevice):
         return await self.execute_config_mode(commands)
 
     async def save_config(self) -> tuple[bool, str]:
-        """Save running config to startup config."""
-        return await self.execute("write")
+        """Save running config to startup config.
+
+        The 'write' command prompts for confirmation:
+          Confirm to overwrite current startup-config configuration [Y/N]:
+        We send 'Y' to confirm.
+        """
+        if not self._telnet:
+            raise ConnectionError("Not connected")
+
+        await self._telnet._send_raw(b"write\r")
+        # Wait for confirmation prompt
+        await self._telnet._read_until_pattern(r"\[Y/N\]", timeout=5)
+        # Confirm
+        await self._telnet._send_raw(b"Y\r")
+        await asyncio.sleep(1)
+        output = await self._telnet._read_until_prompt(timeout=10)
+
+        if "successful" in output.lower():
+            return True, "Configuration saved"
+        return False, output
